@@ -938,9 +938,9 @@ with st.sidebar:
 
     gemini_model_name = st.selectbox(
         "Gemini 모델",
-        ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"],
+        ["models/gemini-2.0-flash", "models/gemini-flash-latest", "models/gemini-3-flash-preview"],
         index=0,
-        help="gemini-1.5-flash: 빠르고 저렴"
+        help="gemini-2.0-flash: 기본 권장"
     )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
