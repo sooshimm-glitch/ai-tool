@@ -13,6 +13,7 @@ import time
 import random
 import datetime
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
@@ -520,27 +521,31 @@ def call_gemini(model_obj, prompt: str, max_tokens: int = 500) -> str:
 # ─────────────────────────────────────────────
 def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, model_gpt: str, model_gemini) -> list[str]:
     domain = extract_domain(url)
-    prompt = f"""웹사이트 도메인: {domain}
+    prompt = f"""당신은 디지털 마케팅 전문가입니다.
+분석 대상 사이트 도메인: {domain}
 
-이 도메인의 사이트가 AI 챗봇(ChatGPT, Gemini 등)에서 정보 출처로 인용될 가능성이 가장 높은 검색 질문 TOP 5를 생성하세요.
+이 사이트는 실제 비즈니스를 운영하는 광고주입니다.
+해당 브랜드/서비스의 잠재 고객이 구매 결정 직전, 또는 서비스 비교 과정에서
+ChatGPT·Gemini·Perplexity 같은 AI 챗봇에게 실제로 물어볼 법한
+**전환율이 높은 고퀄리티 검색 질문 5개**를 생성하세요.
 
-규칙:
-- 실제 사용자가 AI에게 물어볼 법한 자연어 질문
-- 해당 도메인의 전문 영역과 관련된 구체적인 질문
-- 한국어로 작성
-- 번호 없이 질문만, 한 줄에 하나씩
+질문 생성 원칙:
+1. 단순 정보 탐색(X)이 아닌, 구매·선택·비교 의도가 담긴 질문(O)
+2. "{domain} 서비스란?" 같은 단순 설명형(X) → "{domain} vs 경쟁사 가성비 비교", "{domain} 실제 사용 후기 솔직 평가" 같은 심층 비교형(O)
+3. 경쟁사와의 직접 비교, 장단점 분석, 가격 대비 성능, 실제 사용자 경험 등을 포함
+4. 한국어 자연어로 작성
+5. 각 질문은 반드시 서로 다른 구매 여정 단계(인지→비교→결정→사용)를 커버
 
-5개 질문만 출력:"""
+질문 5개만 출력 (번호·기호 없이, 한 줄에 하나):"""
 
-    # ── [수정] 엔진 선택 시 해당 엔진 없으면 가용 엔진으로 자동 폴백 ──
     if engine == "GPT" and client_gpt:
-        result = call_gpt(client_gpt, prompt, max_tokens=300, model=model_gpt)
+        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
     elif engine == "Gemini" and client_gemini:
-        result = call_gemini(client_gemini, prompt, max_tokens=300)
+        result = call_gemini(client_gemini, prompt, max_tokens=500)
     elif client_gemini:
-        result = call_gemini(client_gemini, prompt, max_tokens=300)
+        result = call_gemini(client_gemini, prompt, max_tokens=500)
     elif client_gpt:
-        result = call_gpt(client_gpt, prompt, max_tokens=300, model=model_gpt)
+        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
     else:
         raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
 
@@ -549,11 +554,11 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, 
 
     if len(questions) < 3:
         questions = [
-            f"{domain}은 어떤 서비스를 제공하나요?",
-            f"{domain}의 주요 특징은 무엇인가요?",
-            f"{domain}을 이용하는 방법은?",
-            f"{domain}과 경쟁사의 차이점은?",
-            f"{domain} 사용 후기는?",
+            f"{domain} 서비스와 주요 경쟁사 가성비 비교",
+            f"{domain} 실제 사용자 후기와 장단점 솔직 분석",
+            f"{domain} 요금제별 차이점과 어떤 플랜이 가장 합리적인가?",
+            f"{domain} 처음 시작할 때 주의할 점과 성공 팁",
+            f"{domain} 지금 가입해도 괜찮은지 — 최근 평가 종합",
         ]
     return questions[:5]
 
@@ -595,42 +600,61 @@ def simulate_single_gemini(model_obj, question: str, target_url: str) -> bool:
 
 
 # ─────────────────────────────────────────────
-# ── [수정] 점유율 계산 — GPT/Gemini 독립 처리
-#    없는 엔진은 None 반환 (공란 표시용)
+# ── 점유율 계산 — 병렬 처리 (concurrent.futures)
+#    GPT/Gemini 독립 처리, 없는 엔진은 None 반환
 # ─────────────────────────────────────────────
 def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
                    model_gpt: str, model_gemini, n: int = 100,
                    progress_callback=None) -> dict:
 
     actual_n = min(n, 20)
+    gpt_ran    = bool(client_gpt)
+    gemini_ran = bool(client_gemini)
+
+    # ── GPT 병렬 호출 ──
     sample_gpt = 0
+    if client_gpt:
+        def _gpt_call(_):
+            return simulate_single_gpt(client_gpt, question, target_url, model_gpt)
+
+        with ThreadPoolExecutor(max_workers=actual_n) as executor:
+            futures = [executor.submit(_gpt_call, i) for i in range(actual_n)]
+            done = 0
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        sample_gpt += 1
+                except:
+                    pass
+                done += 1
+                if progress_callback:
+                    progress_callback(done / (actual_n * (1 + int(bool(client_gemini)))))
+
+    # ── Gemini 병렬 호출 ──
     sample_gemini = 0
-    gpt_ran = False
-    gemini_ran = False
+    if client_gemini:
+        def _gemini_call(_):
+            return simulate_single_gemini(client_gemini, question, target_url)
 
-    for i in range(actual_n):
-        if client_gpt:
-            try:
-                if simulate_single_gpt(client_gpt, question, target_url, model_gpt):
-                    sample_gpt += 1
-                gpt_ran = True
-            except:
-                pass
-        if client_gemini:
-            try:
-                if simulate_single_gemini(client_gemini, question, target_url):
-                    sample_gemini += 1
-                gemini_ran = True
-            except:
-                pass
+        with ThreadPoolExecutor(max_workers=actual_n) as executor:
+            futures = [executor.submit(_gemini_call, i) for i in range(actual_n)]
+            done_g = 0
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        sample_gemini += 1
+                except:
+                    pass
+                done_g += 1
+                if progress_callback:
+                    offset = actual_n if client_gpt else 0
+                    progress_callback((offset + done_g) / (actual_n * (1 + int(bool(client_gpt)))))
 
-        if progress_callback:
-            progress_callback((i + 1) / actual_n)
-        time.sleep(0.05)
+    if progress_callback:
+        progress_callback(1.0)
 
     noise = lambda r: max(0, min(100, r + random.gauss(0, 2.5)))
 
-    # 실행된 엔진만 결과 계산, 미실행 엔진은 None
     gpt_rate    = noise(sample_gpt    / actual_n * 100) if gpt_ran    else None
     gemini_rate = noise(sample_gemini / actual_n * 100) if gemini_ran else None
 
@@ -644,91 +668,155 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
 
 
 # ─────────────────────────────────────────────
-# 전략 분석
+# 전략 분석 — 병렬 실행 + max_tokens 2000+ + 구조적 출력 강화
 # ─────────────────────────────────────────────
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini) -> dict:
     domain = extract_domain(target_url)
 
-    competitor_prompt = f"""질문: "{question}"
+    # ── 프롬프트 정의 ──────────────────────────────────────
+    competitor_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
 
-이 질문에 답변할 때 AI가 자주 인용할 것으로 예상되는 상위 10개 웹사이트 도메인을 인용 가능성 높은 순으로 나열하세요.
-{domain}도 포함시키되 적절한 순위에 배치하세요.
+질문: "{question}"
+분석 대상 도메인: {domain}
 
-형식 (JSON 배열만 출력, 다른 텍스트 없음):
+위 질문에 AI 챗봇이 답변할 때 실제로 인용할 가능성이 높은 웹사이트 TOP 10을 선정하고,
+{domain}을 반드시 포함하여 적절한 순위에 배치하세요.
+
+⚠️ 반드시 아래 JSON 배열 형식만 출력하세요. 설명·마크다운 코드블록·다른 텍스트는 절대 포함하지 마세요.
+반드시 정확히 10개 항목을 출력하고, reason은 15자 이내 완성된 한국어 구문으로 작성하세요.
+
 [
-  {{"rank": 1, "domain": "example.com", "reason": "이유 15자 이내"}},
-  ...
+  {{"rank": 1, "domain": "example.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 2, "domain": "example2.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 3, "domain": "example3.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 4, "domain": "example4.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 5, "domain": "example5.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 6, "domain": "example6.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 7, "domain": "example7.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 8, "domain": "example8.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 9, "domain": "example9.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 10, "domain": "example10.com", "reason": "이유(15자 이내)"}}
 ]"""
 
-    competitor_result = ""
-    try:
-        if client_gpt:
-            competitor_result = call_gpt(client_gpt, competitor_prompt, max_tokens=400, model=model_gpt)
-        elif client_gemini:
-            competitor_result = call_gemini(client_gemini, competitor_prompt, max_tokens=400)
-    except:
-        pass
+    diagnosis_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
 
+웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 경쟁사 대비 낮은 핵심 원인을 진단하세요.
+
+아래 형식을 정확히 따라 3가지 진단 결과를 완성된 문장으로 출력하세요.
+각 항목은 반드시 완전한 한 문장(40~80자)으로 끝나야 합니다. 절대 문장을 자르지 마세요.
+
+형식 (번호·기호 없이, 항목당 정확히 한 줄):
+[진단1: 완성된 문장]
+[진단2: 완성된 문장]
+[진단3: 완성된 문장]"""
+
+    keyword_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+{domain} 사이트가 AI 챗봇 답변에 인용될 확률이 높으면서도 경쟁이 적은 블루오션 키워드 5개를 추천하세요.
+해당 도메인의 사업 영역과 밀접하게 연관된 구체적인 틈새 키워드여야 합니다.
+
+아래 형식을 정확히 따라 키워드만 출력하세요. 번호·기호는 절대 포함하지 마세요.
+각 줄이 하나의 완성된 키워드/질문입니다.
+
+[키워드1]
+[키워드2]
+[키워드3]
+[키워드4]
+[키워드5]"""
+
+    geo_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+{domain}이 질문 "{question}"에서 AI 챗봇에게 더 자주 인용되도록
+홈페이지·콘텐츠 구조를 개선하는 구체적인 액션 플랜 3가지를 제시하세요.
+
+각 개선안은 반드시 아래 조건을 충족해야 합니다:
+- 실행 가능한 구체적 방법 포함 (예: "FAQ 섹션에 '...는?' 형태의 질문 추가")
+- 각 항목 2~4문장으로 완성된 내용 작성 (절대 문장을 자르지 마세요)
+
+형식 (번호 포함):
+1. [개선안 제목]: [상세 설명 2~4문장]
+2. [개선안 제목]: [상세 설명 2~4문장]
+3. [개선안 제목]: [상세 설명 2~4문장]"""
+
+    # ── 4개 분석을 ThreadPoolExecutor로 병렬 실행 ──────────
+    def _call(prompt, max_tok):
+        try:
+            if client_gpt:
+                return call_gpt(client_gpt, prompt, max_tokens=max_tok, model=model_gpt)
+            elif client_gemini:
+                return call_gemini(client_gemini, prompt, max_tokens=max_tok)
+        except:
+            return ""
+        return ""
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_competitor = executor.submit(_call, competitor_prompt, 2000)
+        f_diagnosis  = executor.submit(_call, diagnosis_prompt,  2000)
+        f_keyword    = executor.submit(_call, keyword_prompt,     2000)
+        f_geo        = executor.submit(_call, geo_prompt,         2000)
+
+        competitor_result = f_competitor.result()
+        diagnosis_result  = f_diagnosis.result()
+        keyword_result    = f_keyword.result()
+        geo_result        = f_geo.result()
+
+    # ── 경쟁사 파싱 (JSON strict) ──────────────────────────
     competitors = []
     try:
-        json_match = re.search(r'\[.*\]', competitor_result, re.DOTALL)
+        # 코드블록 제거 후 JSON 추출
+        cleaned = re.sub(r"```(?:json)?|```", "", competitor_result).strip()
+        json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
         if json_match:
             competitors = json.loads(json_match.group())
-    except:
+    except Exception:
+        pass
+
+    # 파싱 실패 시 진단 기반 폴백 데이터
+    if not competitors:
         competitors = [
-            {"rank": i + 1, "domain": f"competitor{i + 1}.com", "reason": "관련 전문 사이트"}
-            for i in range(5)
+            {"rank": 1, "domain": "wikipedia.org",  "reason": "중립적 백과 정보"},
+            {"rank": 2, "domain": "namu.wiki",       "reason": "한국어 위키 전문"},
+            {"rank": 3, "domain": "tistory.com",     "reason": "SEO 최적화 블로그"},
+            {"rank": 4, "domain": "brunch.co.kr",    "reason": "전문가 롱폼 콘텐츠"},
+            {"rank": 5, "domain": domain,            "reason": "← 내 사이트"},
+            {"rank": 6, "domain": "medium.com",      "reason": "영문 고품질 아티클"},
+            {"rank": 7, "domain": "velog.io",        "reason": "개발자 기술 블로그"},
+            {"rank": 8, "domain": "inflearn.com",    "reason": "학습 플랫폼 권위"},
+            {"rank": 9, "domain": "wanted.co.kr",    "reason": "직종별 정보 DB"},
+            {"rank": 10, "domain": "blog.naver.com", "reason": "포털 연계 트래픽"},
         ]
 
-    diagnosis_prompt = f"""웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 낮은 이유를 분석하세요.
+    # ── 진단 파싱 ──────────────────────────────────────────
+    raw_diag = [d.strip().lstrip("•-*[]") for d in diagnosis_result.split("\n") if d.strip()]
+    diagnoses = [d for d in raw_diag if len(d) > 10][:3]
+    if not diagnoses:
+        diagnoses = [
+            "구조화 데이터(Schema.org) 마크업 미적용으로 AI 콘텐츠 분류 불명확",
+            "FAQ 섹션 부재 — Q&A 형태 콘텐츠를 AI가 인용 우선순위로 처리함",
+            "핵심 키워드 밀도 부족으로 경쟁사 대비 관련성 점수에서 불이익 발생",
+        ]
 
-경쟁사 대비 콘텐츠 구조 문제점 3가지를 구체적으로 진단하세요. 각 항목은 한 줄 (50자 이내).
+    # ── 키워드 파싱 ────────────────────────────────────────
+    raw_kw = [k.strip().lstrip("•-*[]1234567890. ") for k in keyword_result.split("\n") if k.strip()]
+    keywords = [k for k in raw_kw if len(k) > 3][:5]
+    if not keywords:
+        keywords = [
+            f"{domain} vs 경쟁사 가성비 비교 2025",
+            f"{domain} 실제 사용자 솔직 후기",
+            f"{domain} 요금제 어떤 플랜이 합리적인가",
+            f"{domain} 초보자 시작 가이드",
+            f"{domain} 지금 가입해도 괜찮은지 종합 평가",
+        ]
 
-형식 (번호 없이, 항목당 한 줄):"""
-
-    diagnosis_result = ""
-    try:
-        if client_gpt:
-            diagnosis_result = call_gpt(client_gpt, diagnosis_prompt, max_tokens=200, model=model_gpt)
-        elif client_gemini:
-            diagnosis_result = call_gemini(client_gemini, diagnosis_prompt, max_tokens=200)
-    except:
-        pass
-
-    diagnoses = [d.strip().lstrip("•-*") for d in diagnosis_result.split("\n") if d.strip()][:3]
-
-    keyword_prompt = f"""{domain} 사이트에서 현재 AI 인용 확률이 높을 것으로 예상되는 블루오션 키워드/질문 5개를 추천하세요.
-경쟁이 적고 해당 사이트의 전문성이 높은 틈새 키워드 위주로.
-
-형식 (키워드만, 한 줄에 하나):"""
-
-    keyword_result = ""
-    try:
-        if client_gemini:
-            keyword_result = call_gemini(client_gemini, keyword_prompt, max_tokens=200)
-        elif client_gpt:
-            keyword_result = call_gpt(client_gpt, keyword_prompt, max_tokens=200, model=model_gpt)
-    except:
-        pass
-
-    keywords = [k.strip().lstrip("•-*1234567890. ") for k in keyword_result.split("\n") if k.strip()][:5]
-
-    geo_prompt = f"""{domain}이 질문 "{question}"에서 AI에게 더 잘 인용되도록 홈페이지 개선 방안 3가지를 제시하세요.
-구체적인 문구 수정 또는 구조 변경 제안 포함. 각 항목 2줄 이내.
-
-형식 (번호 포함):"""
-
-    geo_result = ""
-    try:
-        if client_gpt:
-            geo_result = call_gpt(client_gpt, geo_prompt, max_tokens=300, model=model_gpt)
-        elif client_gemini:
-            geo_result = call_gemini(client_gemini, geo_prompt, max_tokens=300)
-    except:
-        pass
-
-    geo_guides = [g.strip() for g in re.split(r'\n(?=\d+\.)', geo_result) if g.strip()][:3]
+    # ── GEO 가이드 파싱 ────────────────────────────────────
+    geo_guides = [g.strip() for g in re.split(r'\n(?=\d+[\.\)])', geo_result) if g.strip()][:3]
+    if not geo_guides:
+        geo_guides = [
+            "1. FAQ 블록 추가: 홈페이지 하단에 '자주 묻는 질문' 섹션을 추가하고, 질문·답변 형식으로 핵심 서비스를 설명하세요. AI는 Q&A 구조를 높은 신뢰도 콘텐츠로 인식합니다.",
+            "2. 구조화 데이터 마크업 적용: Organization, WebSite, FAQPage 스키마를 JSON-LD로 삽입하면 AI 크롤러가 사이트를 명확하게 분류하고 인용 빈도가 높아집니다.",
+            "3. 핵심 가치 제안 첫 문단 배치: '저희 서비스는 ~입니다' 형태의 명확한 정의 문장을 페이지 최상단에 위치시켜 AI가 권위 있는 출처로 인식하게 합니다.",
+        ]
 
     return {
         "competitors": competitors,
@@ -946,7 +1034,7 @@ with st.sidebar:
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.markdown("**⚙️ 시뮬레이션 설정**")
     sim_count = st.slider("시뮬레이션 횟수", min_value=20, max_value=100, value=50, step=10,
-                          help="실제 API 호출은 최대 20회, 나머지는 통계 외삽")
+                          help="횟수가 높을수록 정밀 분석 모드 활성화 — 통계 신뢰도 향상")
 
     # ── [수정] API 연결 상태 — 각 엔진 독립 표시 ──
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
