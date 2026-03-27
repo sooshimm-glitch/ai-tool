@@ -11,6 +11,7 @@ import json
 import re
 import time
 import random
+import datetime
 from collections import Counter
 import plotly.graph_objects as go
 import plotly.express as px
@@ -999,6 +1000,7 @@ with st.sidebar:
     if st.button("▶ 데모 시뮬레이션 실행", key="btn_demo_sidebar", use_container_width=True):
         st.session_state["run_demo"] = True
         st.session_state["demo_tab"] = "auto"
+        st.session_state["run_demo_history"] = True
 
 
 # ─────────────────────────────────────────────
@@ -1050,7 +1052,7 @@ with col_m4:
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
 # 탭
-tab1, tab2 = st.tabs(["🤖 자동 분석형 (AI 질문 도출)", "✏️ 수동 분석형 (키워드 직접 입력)"])
+tab1, tab2, tab3 = st.tabs(["🤖 자동 분석형 (AI 질문 도출)", "✏️ 수동 분석형 (키워드 직접 입력)", "📅 AI 인용 히스토리"])
 
 client_gpt, client_gemini = get_clients()
 
@@ -1426,6 +1428,222 @@ with tab2:
                             render_strategy_analysis(strategy, target_url)
                         except Exception as e:
                             st.error(f"전략 분석 오류: {e}")
+
+
+
+# ─────────────────────────────────────────────
+# Tab 3: AI 인용 히스토리
+# ─────────────────────────────────────────────
+with tab3:
+    st.markdown("""
+    <div class="result-card" style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border-color:#CCCCCC;">
+        <h4 style="color:#111111;margin-bottom:6px;">📅 AI 엔진별 브랜드 인용 히스토리</h4>
+        <p style="color:#475569;font-size:0.88rem;margin:0;line-height:1.6;">
+        로그 파일을 업로드하거나 데모 데이터를 실행하면, Gemini · ChatGPT · Claude 각 엔진이
+        선택 기간 동안 자사 브랜드를 인용한 횟수를 <b>누적 막대그래프</b>로 시각화합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 입력 영역 ──
+    col_h1, col_h2, col_h3 = st.columns([1.2, 1, 1.5])
+    with col_h1:
+        brand_name = st.text_input(
+            "🏷️ 자사 브랜드명",
+            placeholder="예) 네이버, Coupang, MyBrand",
+            key="brand_name"
+        )
+    with col_h2:
+        uploaded_log = st.file_uploader(
+            "📂 로그 파일 업로드 (CSV)",
+            type=["csv"],
+            key="log_upload",
+            help="date, engine, count 컬럼을 포함한 CSV"
+        )
+    with col_h3:
+        today = datetime.date.today()
+        date_range = st.date_input(
+            "📆 분석 기간",
+            value=(today - datetime.timedelta(days=29), today),
+            key="date_range"
+        )
+
+    col_hbtn1, col_hbtn2 = st.columns([2, 1])
+    with col_hbtn1:
+        run_history_real = st.button("📊 히스토리 분석", key="btn_history", use_container_width=True)
+    with col_hbtn2:
+        run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True,
+                                     help="샘플 데이터로 히스토리를 즉시 확인합니다")
+
+    # ── 가상 데이터 생성 함수 ──
+    def generate_history_demo(brand: str, days: int = 30) -> pd.DataFrame:
+        random.seed(42)
+        engines = ["ChatGPT", "Gemini", "Claude"]
+        rows = []
+        base_date = datetime.date.today() - datetime.timedelta(days=days - 1)
+        for d in range(days):
+            dt = base_date + datetime.timedelta(days=d)
+            for eng in engines:
+                # 엔진마다 베이스 레벨 다르게
+                base = {"ChatGPT": 12, "Gemini": 9, "Claude": 6}[eng]
+                count = max(0, int(random.gauss(base, 3.5)))
+                rows.append({"date": dt.strftime("%Y-%m-%d"), "engine": eng, "count": count})
+        return pd.DataFrame(rows)
+
+    def parse_uploaded_log(file, brand: str, date_range) -> pd.DataFrame:
+        df = pd.read_csv(file)
+        df.columns = [c.strip().lower() for c in df.columns]
+        if "date" not in df.columns or "engine" not in df.columns or "count" not in df.columns:
+            st.error("CSV에 'date', 'engine', 'count' 컬럼이 필요합니다.")
+            return pd.DataFrame()
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        if len(date_range) == 2:
+            start = date_range[0].strftime("%Y-%m-%d")
+            end   = date_range[1].strftime("%Y-%m-%d")
+            df = df[(df["date"] >= start) & (df["date"] <= end)]
+        return df
+
+    def render_history_chart(df: pd.DataFrame, brand: str):
+        if df.empty:
+            st.warning("표시할 데이터가 없습니다.")
+            return
+
+        # 피벗
+        pivot = df.pivot_table(index="date", columns="engine", values="count",
+                               aggfunc="sum", fill_value=0).reset_index()
+        pivot = pivot.sort_values("date")
+
+        engines_present = [e for e in ["ChatGPT", "Gemini", "Claude"] if e in pivot.columns]
+        colors = {"ChatGPT": "#111111", "Gemini": "#555555", "Claude": "#999999"}
+
+        # 핵심 지표
+        total_citations = int(df["count"].sum())
+        daily_totals = df.groupby("date")["count"].sum()
+        peak_date = daily_totals.idxmax() if not daily_totals.empty else "-"
+        peak_count = int(daily_totals.max()) if not daily_totals.empty else 0
+        unique_days = df["date"].nunique()
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 인용 횟수", f"{total_citations:,}회")
+        m2.metric("최다 인용 일자", peak_date, f"당일 {peak_count}회")
+        m3.metric("분석 일수", f"{unique_days}일")
+        m4.metric("브랜드", brand if brand else "—")
+
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+        # 누적 막대그래프
+        fig = go.Figure()
+        for eng in engines_present:
+            fig.add_trace(go.Bar(
+                name=eng,
+                x=pivot["date"],
+                y=pivot[eng],
+                marker_color=colors.get(eng, "#AAAAAA"),
+                text=pivot[eng].apply(lambda v: str(v) if v > 0 else ""),
+                textposition="inside",
+                textfont=dict(size=10, color="white"),
+            ))
+
+        fig.update_layout(
+            barmode="stack",
+            title=dict(
+                text=f"{'[' + brand + '] ' if brand else ''}AI 엔진별 브랜드 인용 횟수 추이",
+                font=dict(size=16, color="#111111", family="Plus Jakarta Sans"),
+                x=0,
+            ),
+            plot_bgcolor="rgba(245,245,245,0.8)",
+            paper_bgcolor="white",
+            font=dict(family="Plus Jakarta Sans", color="#111111"),
+            xaxis=dict(
+                title="날짜",
+                tickangle=-35,
+                tickfont=dict(size=10),
+                gridcolor="#EEEEEE",
+                tickmode="auto",
+                nticks=20,
+            ),
+            yaxis=dict(
+                title="인용 횟수 (Count)",
+                gridcolor="#EEEEEE",
+                rangemode="tozero",
+            ),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="right", x=1,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#DDDDDD",
+                borderwidth=1,
+                font=dict(size=12),
+            ),
+            margin=dict(t=70, b=60, l=55, r=20),
+            height=420,
+            bargap=0.18,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 엔진별 합계 테이블
+        st.markdown("### 📋 엔진별 인용 요약")
+        summary_rows = []
+        for eng in engines_present:
+            sub = df[df["engine"] == eng]
+            summary_rows.append({
+                "AI 엔진": eng,
+                "총 인용 횟수": f"{int(sub['count'].sum()):,}회",
+                "일평균": f"{sub['count'].mean():.1f}회",
+                "최대 단일 일자": f"{int(sub['count'].max())}회",
+                "비중": f"{sub['count'].sum() / df['count'].sum() * 100:.1f}%",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    # ── 데모 트리거 (사이드바 버튼 또는 탭 내 버튼) ──
+    trigger_history_demo = run_history_demo or st.session_state.get("run_demo_history", False)
+    if trigger_history_demo:
+        st.session_state["run_demo_history"] = False
+
+        demo_brand = brand_name.strip() if brand_name.strip() else "MyBrand"
+        df_demo = generate_history_demo(demo_brand, days=30)
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border:1.5px dashed #AAAAAA;
+        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:1.2rem;">🎬</span>
+            <div>
+                <span style="font-weight:700;color:#333333;font-size:0.9rem;">데모 모드 — 최근 30일 가상 인용 데이터</span><br>
+                <span style="color:#555555;font-size:0.78rem;">
+                실제 로그 파일 없이 샘플 데이터를 시각화합니다. 브랜드: <b>{demo_brand}</b>
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        render_history_chart(df_demo, demo_brand)
+
+    # ── 실제 파일 업로드 분석 ──
+    elif run_history_real:
+        if uploaded_log is None:
+            st.error("CSV 로그 파일을 업로드해주세요.")
+        else:
+            brand_label = brand_name.strip() if brand_name.strip() else "브랜드"
+            dr = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (
+                today - datetime.timedelta(days=29), today)
+            df_real = parse_uploaded_log(uploaded_log, brand_label, dr)
+            if not df_real.empty:
+                render_history_chart(df_real, brand_label)
+
+    # ── 기본 안내 (아무 버튼도 누르지 않은 상태) ──
+    else:
+        st.markdown("""
+        <div style="text-align:center;padding:48px 20px;color:#AAAAAA;">
+            <div style="font-size:3rem;margin-bottom:12px;">📊</div>
+            <div style="font-size:1rem;font-weight:600;color:#888888;margin-bottom:6px;">
+            로그 파일을 업로드하거나 데모를 실행하세요
+            </div>
+            <div style="font-size:0.82rem;">
+            CSV 형식: <code>date, engine, count</code> 컬럼 포함
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
