@@ -633,10 +633,12 @@ def call_gemini(model_obj, prompt: str, max_tokens: int = 1500) -> str:
 # ─────────────────────────────────────────────
 def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
                                model_gpt: str, model_gemini,
-                               biz_info: dict = None) -> list[str]:
+                               biz_info: dict = None,
+                               manual_brand: str = "") -> list[str]:
     """
-    사이트 비즈니스 실체(biz_info)를 바탕으로 실제 구매 여정의
-    고객이 던질 법한 전환형 질문 5개를 생성한다.
+    브랜드명·업종·서비스 정보를 바탕으로 AI가 자유롭게 판단하여
+    해당 브랜드와 업종에 가장 관련성 높은 고품질 질문 5개를 생성한다.
+    질문 유형은 고정하지 않고 AI가 맥락에 맞게 자율 결정한다.
     """
     if not biz_info:
         biz_info = {
@@ -646,62 +648,88 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
             "target_audience": "일반 사용자",
         }
 
-    brand = biz_info.get("brand_name", "해당 브랜드")
+    # 사용자가 직접 입력한 브랜드명이 있으면 AI 분석값보다 우선 적용
+    brand    = manual_brand.strip() if manual_brand.strip() else biz_info.get("brand_name", "해당 브랜드")
     industry = biz_info.get("industry", "디지털 서비스")
-    product = biz_info.get("core_product", "서비스")
+    product  = biz_info.get("core_product", "서비스")
     audience = biz_info.get("target_audience", "사용자")
 
-    prompt = f"""당신은 10년 차 퍼포먼스 마케팅 전략 기획자입니다.
+    prompt = f"""당신은 10년 차 퍼포먼스 마케팅 전략 기획자이자 GEO(Generative Engine Optimization) 전문가입니다.
 
-아래 브랜드 정보를 바탕으로, 실제 구매 여정에 있는 고객이 AI 챗봇에게 던질 법한 질문 5개를 생성하세요.
+아래 브랜드와 업종 정보를 깊이 이해한 뒤, 실제로 이 브랜드를 검색하거나 도입을 고려하는 사람이 AI 챗봇에게 던질 가능성이 가장 높은 질문 5개를 생성하세요.
 
 [브랜드 정보]
 - 브랜드명: {brand}
 - 업종: {industry}
-- 핵심 서비스: {product}
-- 타겟 고객: {audience}
+- 핵심 서비스/상품: {product}
+- 주요 타겟: {audience}
 
-[필수 포함 질문 유형]
-1. 비교 분석형: {brand}과 주요 경쟁 서비스의 차별점과 가성비를 비교하는 질문
-2. 실무 해결형: {audience}가 {brand}를 도입했을 때 얻을 수 있는 실질적 효과(ROI, 효율성 등)를 묻는 질문
-3. 신뢰도 검증형: {brand}의 실제 사용 레퍼런스, 사용자 평판, 신뢰도를 확인하는 질문
-4. 구매 결정형: 가격, 요금제, 도입 조건 등 구체적인 의사결정에 필요한 질문
-5. 문제 해결형: {audience}가 겪는 실무 고통점을 {brand}로 해결할 수 있는지 묻는 질문
+[생성 원칙]
+- 질문 유형을 미리 정해두지 말 것. 이 브랜드와 업종의 특성, 타겟 고객의 실제 관심사를 바탕으로 AI가 자유롭게 판단하여 가장 관련성 높고 검색 가능성이 높은 질문을 선별할 것.
+- 단순히 "~는 무엇인가요?" 같은 기초 정보 질문은 제외. 실제로 구매·도입·추천을 고려하는 맥락에서 나올 법한 깊이 있는 질문을 생성할 것.
+- 각 질문은 독립적이며 중복 없이 서로 다른 각도의 관심사를 다룰 것.
+- 질문 안에 브랜드명 '{brand}'을 자연스럽게 포함할 것.
+- {industry} 업종 특유의 전문 용어, 고객 고민, 시장 맥락을 반영하여 현장감 있게 작성할 것.
 
-[절대 규칙]
-- 질문에 도메인 주소(.com, .co.kr 등)를 절대 포함하지 말 것
-- 100% 자연스러운 한국어 문장으로 작성
-- 브랜드명({brand})은 자연스럽게 포함
-- 번호나 유형 라벨 없이 질문 5개만, 한 줄에 하나씩 출력
-- 각 질문은 반드시 물음표(?)로 끝낼 것
+[출력 규칙]
+- 도메인 주소(.com, .co.kr 등) 절대 포함 금지
+- 순수 한국어 문장으로 작성
+- 번호·유형 라벨·설명 없이 질문 5개만, 한 줄에 하나씩
+- 모든 질문은 물음표(?)로 종결
 
-질문 5개만 출력:"""
+질문 5개:"""
 
     result = ""
     try:
         if engine == "GPT" and client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt)
+            result = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt)
         elif engine == "Gemini" and client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=600)
+            result = call_gemini(client_gemini, prompt, max_tokens=800)
         elif client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=600)
+            result = call_gemini(client_gemini, prompt, max_tokens=800)
         elif client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt)
+            result = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt)
         else:
             raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
     except Exception as e:
         raise RuntimeError(str(e))
 
-    questions = [q.strip().lstrip("•-*1234567890. ") for q in result.split("\n") if q.strip()]
-    questions = [q for q in questions if len(q) > 5 and "." not in q.split()[0]][:5]
+    # 파싱: 번호·기호 제거 후 물음표로 끝나는 줄만 수집
+    lines = [ln.strip() for ln in result.split("\n") if ln.strip()]
+    questions = []
+    for ln in lines:
+        # 앞의 번호/불릿/유형라벨 제거
+        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
+        clean = re.sub(r'^[-•*]\s*', '', clean)
+        # 유형 라벨(예: "[비교형]") 제거
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)
+        clean = clean.strip()
+        if len(clean) > 8 and clean.endswith("?"):
+            questions.append(clean)
 
+    # 물음표 없이 끝난 문장도 수용 (충분한 길이면 포함)
+    if len(questions) < 3:
+        questions = []
+        for ln in lines:
+            clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
+            clean = re.sub(r'^[-•*]\s*', '', clean)
+            clean = re.sub(r'^\[.*?\]\s*', '', clean)
+            clean = clean.strip()
+            if len(clean) > 10:
+                if not clean.endswith("?"):
+                    clean += "?"
+                questions.append(clean)
+
+    questions = questions[:5]
+
+    # 최후 폴백: 브랜드+업종 기반 범용 질문
     if len(questions) < 3:
         questions = [
-            f"{brand}과 경쟁 서비스를 비교했을 때 가장 큰 차별점과 가성비는 어떻게 되나요?",
-            f"{audience}가 {brand}를 도입했을 때 기대할 수 있는 ROI와 실질적인 효율은 얼마나 되나요?",
-            f"{brand}의 실제 도입 레퍼런스와 사용자 평판은 어떤가요?",
-            f"{brand}의 요금제와 도입 조건은 어떻게 구성되어 있나요?",
-            f"{audience}가 겪는 주요 업무 고통점을 {brand}로 어떻게 해결할 수 있나요?",
+            f"{brand}은 {industry} 시장에서 경쟁 서비스 대비 어떤 점이 다른가요?",
+            f"{audience}가 {brand}를 실제로 도입한 뒤 얻는 가장 큰 변화는 무엇인가요?",
+            f"{brand}의 신뢰도와 실제 사용 후기는 어떻게 평가되나요?",
+            f"{brand}의 요금 구조와 가성비는 동종 업계 대비 어느 수준인가요?",
+            f"{industry} 분야에서 {brand}을 선택해야 하는 핵심 이유는 무엇인가요?",
         ]
     return questions[:5]
 
@@ -1245,11 +1273,20 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    url_auto = st.text_input(
-        "🌐 분석할 사이트 URL",
-        placeholder="예) https://www.naver.com 또는 naver.com",
-        key="url_auto"
-    )
+    col_url, col_brand = st.columns([2, 1])
+    with col_url:
+        url_auto = st.text_input(
+            "🌐 분석할 사이트 URL",
+            placeholder="예) https://www.naver.com 또는 naver.com",
+            key="url_auto"
+        )
+    with col_brand:
+        manual_brand_input = st.text_input(
+            "🏷️ 브랜드명 직접 입력 (선택)",
+            placeholder="예) 네이버, 카카오, 토스 …",
+            key="manual_brand_input",
+            help="AI가 분석한 브랜드명이 틀렸을 때 여기에 정확한 브랜드명을 입력하면 질문 생성에 우선 반영됩니다."
+        )
 
     question_engine = st.radio(
         "질문 도출 엔진",
@@ -1344,25 +1381,36 @@ with tab1:
                     biz_info = analyze_business_identity(
                         client_gpt, client_gemini, target_url, gpt_model, client_gemini
                     )
-                    st.success(f"✅ 비즈니스 분석 완료")
+                    # 사용자가 직접 브랜드명을 입력했으면 AI 분석값 덮어쓰기
+                    if manual_brand_input.strip():
+                        biz_info["brand_name"] = manual_brand_input.strip()
+
+                    st.success("✅ 비즈니스 분석 완료")
                     col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-                    col_b1.metric("브랜드명", biz_info.get("brand_name", "—"))
+                    col_b1.metric(
+                        "브랜드명",
+                        biz_info.get("brand_name", "—"),
+                        "✏️ 직접 입력됨" if manual_brand_input.strip() else "🤖 AI 분석",
+                    )
                     col_b2.metric("업종", biz_info.get("industry", "—"))
                     col_b3.metric("핵심 서비스", biz_info.get("core_product", "—")[:20])
                     col_b4.metric("타겟 고객", biz_info.get("target_audience", "—")[:20])
                     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
                 except Exception as e:
                     st.warning(f"사이트 분석 일부 실패 (기본값으로 진행): {e}")
+                    if manual_brand_input.strip():
+                        biz_info["brand_name"] = manual_brand_input.strip()
 
             with st.spinner(f"**{domain}** 질문 도출 중..."):
-                st.markdown("**📝 Step 1 — 비즈니스 전환형 타겟 질문 도출 중...**")
+                st.markdown("**📝 Step 1 — 브랜드·업종 맥락 기반 타겟 질문 도출 중...**")
                 try:
                     questions = generate_target_questions(
                         client_gpt, client_gemini, target_url,
                         question_engine, gpt_model, client_gemini,
                         biz_info=biz_info,
+                        manual_brand=manual_brand_input,
                     )
-                    st.success(f"✅ TOP {len(questions)}개 전환형 질문 도출 완료")
+                    st.success(f"✅ TOP {len(questions)}개 질문 도출 완료")
                 except Exception as e:
                     st.error(f"질문 도출 실패: {e}")
                     questions = []
