@@ -13,11 +13,13 @@ import time
 import random
 import datetime
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from urllib.parse import urlparse
+import concurrent.futures
+import requests
+from html.parser import HTMLParser
 
 # ─────────────────────────────────────────────
 # 페이지 설정
@@ -365,6 +367,116 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
+# ─────────────────────────────────────────────
+# 심층 사이트 크롤링 — 비즈니스 실체 추출
+# ─────────────────────────────────────────────
+class _MetaParser(HTMLParser):
+    """메인 페이지에서 title·description·og 태그 추출."""
+    def __init__(self):
+        super().__init__()
+        self.title = ""
+        self.description = ""
+        self.og_title = ""
+        self.og_description = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        if tag == "title":
+            self._in_title = True
+        if tag == "meta":
+            name = attrs_dict.get("name", "").lower()
+            prop = attrs_dict.get("property", "").lower()
+            content = attrs_dict.get("content", "")
+            if name == "description":
+                self.description = content
+            elif prop == "og:title":
+                self.og_title = content
+            elif prop == "og:description":
+                self.og_description = content
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title and not self.title:
+            self.title = data.strip()
+
+
+def crawl_site_metadata(url: str) -> dict:
+    """사이트 메인 페이지를 크롤링하여 메타 정보를 반환한다."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; CitationBot/1.0)",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        html = resp.text[:80_000]  # 앞 80KB만 파싱
+        parser = _MetaParser()
+        parser.feed(html)
+        return {
+            "title": parser.og_title or parser.title or "",
+            "description": parser.og_description or parser.description or "",
+            "html_snippet": html[:3000],  # AI 분석용 본문 앞부분
+        }
+    except Exception:
+        return {"title": "", "description": "", "html_snippet": ""}
+
+
+def analyze_business_identity(client_gpt, client_gemini, url: str,
+                               model_gpt: str, model_gemini) -> dict:
+    """크롤링된 메타데이터를 AI로 분석하여 업종·상품·타겟·브랜드명을 추출한다."""
+    meta = crawl_site_metadata(url)
+    domain = extract_domain(url)
+
+    prompt = f"""아래는 웹사이트 {domain}의 메인 페이지 정보입니다.
+
+[페이지 제목]
+{meta['title']}
+
+[메타 설명]
+{meta['description']}
+
+[본문 일부]
+{meta['html_snippet'][:1500]}
+
+위 정보를 바탕으로 다음 항목을 분석하고 JSON으로만 출력하세요.
+다른 설명이나 마크다운 없이 JSON 객체만 반환하세요.
+
+{{
+  "brand_name": "실제 한글 브랜드명 또는 서비스명 (도메인 주소 제외)",
+  "industry": "업종 카테고리 (예: B2B 마케팅 SaaS, 전자상거래, 법률 서비스, 음식 배달 등)",
+  "core_product": "핵심 상품 또는 서비스 (한 문장)",
+  "target_audience": "주요 타겟 고객층 (예: 중소기업 마케터, 20-30대 직장인 등)"
+}}"""
+
+    result_str = ""
+    try:
+        if client_gpt:
+            result_str = call_gpt(client_gpt, prompt, max_tokens=400, model=model_gpt)
+        elif client_gemini:
+            result_str = call_gemini(client_gemini, prompt, max_tokens=400)
+    except Exception:
+        pass
+
+    try:
+        json_match = re.search(r'\{.*\}', result_str, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception:
+        pass
+
+    # 폴백: 도메인 기반 기본값
+    return {
+        "brand_name": domain.split(".")[0].upper(),
+        "industry": "디지털 서비스",
+        "core_product": f"{domain} 서비스",
+        "target_audience": "일반 사용자",
+    }
+
+
 def get_badge_class(rate: float) -> str:
     if rate >= 30:
         return "share-badge-high"
@@ -482,7 +594,7 @@ def get_demo_data(url: str) -> dict:
 # ─────────────────────────────────────────────
 # GPT API 호출
 # ─────────────────────────────────────────────
-def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", max_tokens: int = 500) -> str:
+def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", max_tokens: int = 1500) -> str:
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -502,7 +614,7 @@ def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", 
 # ─────────────────────────────────────────────
 # Gemini API 호출
 # ─────────────────────────────────────────────
-def call_gemini(model_obj, prompt: str, max_tokens: int = 500) -> str:
+def call_gemini(model_obj, prompt: str, max_tokens: int = 1500) -> str:
     try:
         response = model_obj.generate_content(
             prompt,
@@ -517,48 +629,79 @@ def call_gemini(model_obj, prompt: str, max_tokens: int = 500) -> str:
 
 
 # ─────────────────────────────────────────────
-# AI 타겟 질문 생성 (자동 분석)
+# AI 타겟 질문 생성 — 비즈니스 전환형 (심층 분석 기반)
 # ─────────────────────────────────────────────
-def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, model_gpt: str, model_gemini) -> list[str]:
-    domain = extract_domain(url)
-    prompt = f"""당신은 디지털 마케팅 전문가입니다.
-분석 대상 사이트 도메인: {domain}
+def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
+                               model_gpt: str, model_gemini,
+                               biz_info: dict = None) -> list[str]:
+    """
+    사이트 비즈니스 실체(biz_info)를 바탕으로 실제 구매 여정의
+    고객이 던질 법한 전환형 질문 5개를 생성한다.
+    """
+    if not biz_info:
+        biz_info = {
+            "brand_name": extract_domain(url).split(".")[0].upper(),
+            "industry": "디지털 서비스",
+            "core_product": "해당 서비스",
+            "target_audience": "일반 사용자",
+        }
 
-이 사이트는 실제 비즈니스를 운영하는 광고주입니다.
-해당 브랜드/서비스의 잠재 고객이 구매 결정 직전, 또는 서비스 비교 과정에서
-ChatGPT·Gemini·Perplexity 같은 AI 챗봇에게 실제로 물어볼 법한
-**전환율이 높은 고퀄리티 검색 질문 5개**를 생성하세요.
+    brand = biz_info.get("brand_name", "해당 브랜드")
+    industry = biz_info.get("industry", "디지털 서비스")
+    product = biz_info.get("core_product", "서비스")
+    audience = biz_info.get("target_audience", "사용자")
 
-질문 생성 원칙:
-1. 단순 정보 탐색(X)이 아닌, 구매·선택·비교 의도가 담긴 질문(O)
-2. "{domain} 서비스란?" 같은 단순 설명형(X) → "{domain} vs 경쟁사 가성비 비교", "{domain} 실제 사용 후기 솔직 평가" 같은 심층 비교형(O)
-3. 경쟁사와의 직접 비교, 장단점 분석, 가격 대비 성능, 실제 사용자 경험 등을 포함
-4. 한국어 자연어로 작성
-5. 각 질문은 반드시 서로 다른 구매 여정 단계(인지→비교→결정→사용)를 커버
+    prompt = f"""당신은 10년 차 퍼포먼스 마케팅 전략 기획자입니다.
 
-질문 5개만 출력 (번호·기호 없이, 한 줄에 하나):"""
+아래 브랜드 정보를 바탕으로, 실제 구매 여정에 있는 고객이 AI 챗봇에게 던질 법한 질문 5개를 생성하세요.
 
-    if engine == "GPT" and client_gpt:
-        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
-    elif engine == "Gemini" and client_gemini:
-        result = call_gemini(client_gemini, prompt, max_tokens=500)
-    elif client_gemini:
-        result = call_gemini(client_gemini, prompt, max_tokens=500)
-    elif client_gpt:
-        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
-    else:
-        raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
+[브랜드 정보]
+- 브랜드명: {brand}
+- 업종: {industry}
+- 핵심 서비스: {product}
+- 타겟 고객: {audience}
+
+[필수 포함 질문 유형]
+1. 비교 분석형: {brand}과 주요 경쟁 서비스의 차별점과 가성비를 비교하는 질문
+2. 실무 해결형: {audience}가 {brand}를 도입했을 때 얻을 수 있는 실질적 효과(ROI, 효율성 등)를 묻는 질문
+3. 신뢰도 검증형: {brand}의 실제 사용 레퍼런스, 사용자 평판, 신뢰도를 확인하는 질문
+4. 구매 결정형: 가격, 요금제, 도입 조건 등 구체적인 의사결정에 필요한 질문
+5. 문제 해결형: {audience}가 겪는 실무 고통점을 {brand}로 해결할 수 있는지 묻는 질문
+
+[절대 규칙]
+- 질문에 도메인 주소(.com, .co.kr 등)를 절대 포함하지 말 것
+- 100% 자연스러운 한국어 문장으로 작성
+- 브랜드명({brand})은 자연스럽게 포함
+- 번호나 유형 라벨 없이 질문 5개만, 한 줄에 하나씩 출력
+- 각 질문은 반드시 물음표(?)로 끝낼 것
+
+질문 5개만 출력:"""
+
+    result = ""
+    try:
+        if engine == "GPT" and client_gpt:
+            result = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt)
+        elif engine == "Gemini" and client_gemini:
+            result = call_gemini(client_gemini, prompt, max_tokens=600)
+        elif client_gemini:
+            result = call_gemini(client_gemini, prompt, max_tokens=600)
+        elif client_gpt:
+            result = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt)
+        else:
+            raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
+    except Exception as e:
+        raise RuntimeError(str(e))
 
     questions = [q.strip().lstrip("•-*1234567890. ") for q in result.split("\n") if q.strip()]
-    questions = [q for q in questions if len(q) > 5][:5]
+    questions = [q for q in questions if len(q) > 5 and "." not in q.split()[0]][:5]
 
     if len(questions) < 3:
         questions = [
-            f"{domain} 서비스와 주요 경쟁사 가성비 비교",
-            f"{domain} 실제 사용자 후기와 장단점 솔직 분석",
-            f"{domain} 요금제별 차이점과 어떤 플랜이 가장 합리적인가?",
-            f"{domain} 처음 시작할 때 주의할 점과 성공 팁",
-            f"{domain} 지금 가입해도 괜찮은지 — 최근 평가 종합",
+            f"{brand}과 경쟁 서비스를 비교했을 때 가장 큰 차별점과 가성비는 어떻게 되나요?",
+            f"{audience}가 {brand}를 도입했을 때 기대할 수 있는 ROI와 실질적인 효율은 얼마나 되나요?",
+            f"{brand}의 실제 도입 레퍼런스와 사용자 평판은 어떤가요?",
+            f"{brand}의 요금제와 도입 조건은 어떻게 구성되어 있나요?",
+            f"{audience}가 겪는 주요 업무 고통점을 {brand}로 어떻게 해결할 수 있나요?",
         ]
     return questions[:5]
 
@@ -600,55 +743,67 @@ def simulate_single_gemini(model_obj, question: str, target_url: str) -> bool:
 
 
 # ─────────────────────────────────────────────
-# ── 점유율 계산 — 병렬 처리 (concurrent.futures)
-#    GPT/Gemini 독립 처리, 없는 엔진은 None 반환
+# ── [수정] 점유율 계산 — GPT/Gemini 독립 처리
+#    없는 엔진은 None 반환 (공란 표시용)
 # ─────────────────────────────────────────────
 def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
                    model_gpt: str, model_gemini, n: int = 100,
                    progress_callback=None) -> dict:
 
     actual_n = min(n, 20)
-    gpt_ran    = bool(client_gpt)
-    gemini_ran = bool(client_gemini)
 
-    # ── GPT 병렬 호출 ──
+    def _run_gpt_batch():
+        hits = 0
+        for _ in range(actual_n):
+            try:
+                if simulate_single_gpt(client_gpt, question, target_url, model_gpt):
+                    hits += 1
+            except Exception:
+                pass
+        return hits
+
+    def _run_gemini_batch():
+        hits = 0
+        for _ in range(actual_n):
+            try:
+                if simulate_single_gemini(client_gemini, question, target_url):
+                    hits += 1
+            except Exception:
+                pass
+        return hits
+
+    # ── 병렬 처리: GPT/Gemini를 동시에 실행 ──
     sample_gpt = 0
-    if client_gpt:
-        def _gpt_call(_):
-            return simulate_single_gpt(client_gpt, question, target_url, model_gpt)
-
-        with ThreadPoolExecutor(max_workers=actual_n) as executor:
-            futures = [executor.submit(_gpt_call, i) for i in range(actual_n)]
-            done = 0
-            for future in as_completed(futures):
-                try:
-                    if future.result():
-                        sample_gpt += 1
-                except:
-                    pass
-                done += 1
-                if progress_callback:
-                    progress_callback(done / (actual_n * (1 + int(bool(client_gemini)))))
-
-    # ── Gemini 병렬 호출 ──
     sample_gemini = 0
-    if client_gemini:
-        def _gemini_call(_):
-            return simulate_single_gemini(client_gemini, question, target_url)
+    gpt_ran = False
+    gemini_ran = False
 
-        with ThreadPoolExecutor(max_workers=actual_n) as executor:
-            futures = [executor.submit(_gemini_call, i) for i in range(actual_n)]
-            done_g = 0
-            for future in as_completed(futures):
-                try:
-                    if future.result():
-                        sample_gemini += 1
-                except:
-                    pass
-                done_g += 1
-                if progress_callback:
-                    offset = actual_n if client_gpt else 0
-                    progress_callback((offset + done_g) / (actual_n * (1 + int(bool(client_gpt)))))
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        if client_gpt:
+            futures["gpt"] = executor.submit(_run_gpt_batch)
+        if client_gemini:
+            futures["gemini"] = executor.submit(_run_gemini_batch)
+
+        # 진행 상태 업데이트 (병렬 실행 중 폴링)
+        total_steps = 10
+        for step in range(total_steps):
+            time.sleep(0.08)
+            if progress_callback:
+                progress_callback((step + 1) / total_steps)
+
+        if "gpt" in futures:
+            try:
+                sample_gpt = futures["gpt"].result(timeout=60)
+                gpt_ran = True
+            except Exception:
+                pass
+        if "gemini" in futures:
+            try:
+                sample_gemini = futures["gemini"].result(timeout=60)
+                gemini_ran = True
+            except Exception:
+                pass
 
     if progress_callback:
         progress_callback(1.0)
@@ -668,155 +823,91 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
 
 
 # ─────────────────────────────────────────────
-# 전략 분석 — 병렬 실행 + max_tokens 2000+ + 구조적 출력 강화
+# 전략 분석
 # ─────────────────────────────────────────────
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini) -> dict:
     domain = extract_domain(target_url)
 
-    # ── 프롬프트 정의 ──────────────────────────────────────
-    competitor_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+    competitor_prompt = f"""질문: "{question}"
 
-질문: "{question}"
-분석 대상 도메인: {domain}
+이 질문에 답변할 때 AI가 자주 인용할 것으로 예상되는 상위 10개 웹사이트 도메인을 인용 가능성 높은 순으로 나열하세요.
+{domain}도 포함시키되 적절한 순위에 배치하세요.
 
-위 질문에 AI 챗봇이 답변할 때 실제로 인용할 가능성이 높은 웹사이트 TOP 10을 선정하고,
-{domain}을 반드시 포함하여 적절한 순위에 배치하세요.
-
-⚠️ 반드시 아래 JSON 배열 형식만 출력하세요. 설명·마크다운 코드블록·다른 텍스트는 절대 포함하지 마세요.
-반드시 정확히 10개 항목을 출력하고, reason은 15자 이내 완성된 한국어 구문으로 작성하세요.
-
+형식 (JSON 배열만 출력, 다른 텍스트 없음):
 [
-  {{"rank": 1, "domain": "example.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 2, "domain": "example2.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 3, "domain": "example3.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 4, "domain": "example4.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 5, "domain": "example5.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 6, "domain": "example6.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 7, "domain": "example7.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 8, "domain": "example8.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 9, "domain": "example9.com", "reason": "이유(15자 이내)"}},
-  {{"rank": 10, "domain": "example10.com", "reason": "이유(15자 이내)"}}
+  {{"rank": 1, "domain": "example.com", "reason": "이유 15자 이내"}},
+  ...
 ]"""
 
-    diagnosis_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
-
-웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 경쟁사 대비 낮은 핵심 원인을 진단하세요.
-
-아래 형식을 정확히 따라 3가지 진단 결과를 완성된 문장으로 출력하세요.
-각 항목은 반드시 완전한 한 문장(40~80자)으로 끝나야 합니다. 절대 문장을 자르지 마세요.
-
-형식 (번호·기호 없이, 항목당 정확히 한 줄):
-[진단1: 완성된 문장]
-[진단2: 완성된 문장]
-[진단3: 완성된 문장]"""
-
-    keyword_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
-
-{domain} 사이트가 AI 챗봇 답변에 인용될 확률이 높으면서도 경쟁이 적은 블루오션 키워드 5개를 추천하세요.
-해당 도메인의 사업 영역과 밀접하게 연관된 구체적인 틈새 키워드여야 합니다.
-
-아래 형식을 정확히 따라 키워드만 출력하세요. 번호·기호는 절대 포함하지 마세요.
-각 줄이 하나의 완성된 키워드/질문입니다.
-
-[키워드1]
-[키워드2]
-[키워드3]
-[키워드4]
-[키워드5]"""
-
-    geo_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
-
-{domain}이 질문 "{question}"에서 AI 챗봇에게 더 자주 인용되도록
-홈페이지·콘텐츠 구조를 개선하는 구체적인 액션 플랜 3가지를 제시하세요.
-
-각 개선안은 반드시 아래 조건을 충족해야 합니다:
-- 실행 가능한 구체적 방법 포함 (예: "FAQ 섹션에 '...는?' 형태의 질문 추가")
-- 각 항목 2~4문장으로 완성된 내용 작성 (절대 문장을 자르지 마세요)
-
-형식 (번호 포함):
-1. [개선안 제목]: [상세 설명 2~4문장]
-2. [개선안 제목]: [상세 설명 2~4문장]
-3. [개선안 제목]: [상세 설명 2~4문장]"""
-
-    # ── 4개 분석을 ThreadPoolExecutor로 병렬 실행 ──────────
-    def _call(prompt, max_tok):
-        try:
-            if client_gpt:
-                return call_gpt(client_gpt, prompt, max_tokens=max_tok, model=model_gpt)
-            elif client_gemini:
-                return call_gemini(client_gemini, prompt, max_tokens=max_tok)
-        except:
-            return ""
-        return ""
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        f_competitor = executor.submit(_call, competitor_prompt, 2000)
-        f_diagnosis  = executor.submit(_call, diagnosis_prompt,  2000)
-        f_keyword    = executor.submit(_call, keyword_prompt,     2000)
-        f_geo        = executor.submit(_call, geo_prompt,         2000)
-
-        competitor_result = f_competitor.result()
-        diagnosis_result  = f_diagnosis.result()
-        keyword_result    = f_keyword.result()
-        geo_result        = f_geo.result()
-
-    # ── 경쟁사 파싱 (JSON strict) ──────────────────────────
-    competitors = []
+    competitor_result = ""
     try:
-        # 코드블록 제거 후 JSON 추출
-        cleaned = re.sub(r"```(?:json)?|```", "", competitor_result).strip()
-        json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-        if json_match:
-            competitors = json.loads(json_match.group())
-    except Exception:
+        if client_gpt:
+            competitor_result = call_gpt(client_gpt, competitor_prompt, max_tokens=400, model=model_gpt)
+        elif client_gemini:
+            competitor_result = call_gemini(client_gemini, competitor_prompt, max_tokens=400)
+    except:
         pass
 
-    # 파싱 실패 시 진단 기반 폴백 데이터
-    if not competitors:
+    competitors = []
+    try:
+        json_match = re.search(r'\[.*\]', competitor_result, re.DOTALL)
+        if json_match:
+            competitors = json.loads(json_match.group())
+    except:
         competitors = [
-            {"rank": 1, "domain": "wikipedia.org",  "reason": "중립적 백과 정보"},
-            {"rank": 2, "domain": "namu.wiki",       "reason": "한국어 위키 전문"},
-            {"rank": 3, "domain": "tistory.com",     "reason": "SEO 최적화 블로그"},
-            {"rank": 4, "domain": "brunch.co.kr",    "reason": "전문가 롱폼 콘텐츠"},
-            {"rank": 5, "domain": domain,            "reason": "← 내 사이트"},
-            {"rank": 6, "domain": "medium.com",      "reason": "영문 고품질 아티클"},
-            {"rank": 7, "domain": "velog.io",        "reason": "개발자 기술 블로그"},
-            {"rank": 8, "domain": "inflearn.com",    "reason": "학습 플랫폼 권위"},
-            {"rank": 9, "domain": "wanted.co.kr",    "reason": "직종별 정보 DB"},
-            {"rank": 10, "domain": "blog.naver.com", "reason": "포털 연계 트래픽"},
+            {"rank": i + 1, "domain": f"competitor{i + 1}.com", "reason": "관련 전문 사이트"}
+            for i in range(5)
         ]
 
-    # ── 진단 파싱 ──────────────────────────────────────────
-    raw_diag = [d.strip().lstrip("•-*[]") for d in diagnosis_result.split("\n") if d.strip()]
-    diagnoses = [d for d in raw_diag if len(d) > 10][:3]
-    if not diagnoses:
-        diagnoses = [
-            "구조화 데이터(Schema.org) 마크업 미적용으로 AI 콘텐츠 분류 불명확",
-            "FAQ 섹션 부재 — Q&A 형태 콘텐츠를 AI가 인용 우선순위로 처리함",
-            "핵심 키워드 밀도 부족으로 경쟁사 대비 관련성 점수에서 불이익 발생",
-        ]
+    diagnosis_prompt = f"""웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 낮은 이유를 분석하세요.
 
-    # ── 키워드 파싱 ────────────────────────────────────────
-    raw_kw = [k.strip().lstrip("•-*[]1234567890. ") for k in keyword_result.split("\n") if k.strip()]
-    keywords = [k for k in raw_kw if len(k) > 3][:5]
-    if not keywords:
-        keywords = [
-            f"{domain} vs 경쟁사 가성비 비교 2025",
-            f"{domain} 실제 사용자 솔직 후기",
-            f"{domain} 요금제 어떤 플랜이 합리적인가",
-            f"{domain} 초보자 시작 가이드",
-            f"{domain} 지금 가입해도 괜찮은지 종합 평가",
-        ]
+경쟁사 대비 콘텐츠 구조 문제점 3가지를 구체적으로 진단하세요. 각 항목은 한 줄 (50자 이내).
 
-    # ── GEO 가이드 파싱 ────────────────────────────────────
-    geo_guides = [g.strip() for g in re.split(r'\n(?=\d+[\.\)])', geo_result) if g.strip()][:3]
-    if not geo_guides:
-        geo_guides = [
-            "1. FAQ 블록 추가: 홈페이지 하단에 '자주 묻는 질문' 섹션을 추가하고, 질문·답변 형식으로 핵심 서비스를 설명하세요. AI는 Q&A 구조를 높은 신뢰도 콘텐츠로 인식합니다.",
-            "2. 구조화 데이터 마크업 적용: Organization, WebSite, FAQPage 스키마를 JSON-LD로 삽입하면 AI 크롤러가 사이트를 명확하게 분류하고 인용 빈도가 높아집니다.",
-            "3. 핵심 가치 제안 첫 문단 배치: '저희 서비스는 ~입니다' 형태의 명확한 정의 문장을 페이지 최상단에 위치시켜 AI가 권위 있는 출처로 인식하게 합니다.",
-        ]
+형식 (번호 없이, 항목당 한 줄):"""
+
+    diagnosis_result = ""
+    try:
+        if client_gpt:
+            diagnosis_result = call_gpt(client_gpt, diagnosis_prompt, max_tokens=200, model=model_gpt)
+        elif client_gemini:
+            diagnosis_result = call_gemini(client_gemini, diagnosis_prompt, max_tokens=200)
+    except:
+        pass
+
+    diagnoses = [d.strip().lstrip("•-*") for d in diagnosis_result.split("\n") if d.strip()][:3]
+
+    keyword_prompt = f"""{domain} 사이트에서 현재 AI 인용 확률이 높을 것으로 예상되는 블루오션 키워드/질문 5개를 추천하세요.
+경쟁이 적고 해당 사이트의 전문성이 높은 틈새 키워드 위주로.
+
+형식 (키워드만, 한 줄에 하나):"""
+
+    keyword_result = ""
+    try:
+        if client_gemini:
+            keyword_result = call_gemini(client_gemini, keyword_prompt, max_tokens=200)
+        elif client_gpt:
+            keyword_result = call_gpt(client_gpt, keyword_prompt, max_tokens=200, model=model_gpt)
+    except:
+        pass
+
+    keywords = [k.strip().lstrip("•-*1234567890. ") for k in keyword_result.split("\n") if k.strip()][:5]
+
+    geo_prompt = f"""{domain}이 질문 "{question}"에서 AI에게 더 잘 인용되도록 홈페이지 개선 방안 3가지를 제시하세요.
+구체적인 문구 수정 또는 구조 변경 제안 포함. 각 항목 2줄 이내.
+
+형식 (번호 포함):"""
+
+    geo_result = ""
+    try:
+        if client_gpt:
+            geo_result = call_gpt(client_gpt, geo_prompt, max_tokens=300, model=model_gpt)
+        elif client_gemini:
+            geo_result = call_gemini(client_gemini, geo_prompt, max_tokens=300)
+    except:
+        pass
+
+    geo_guides = [g.strip() for g in re.split(r'\n(?=\d+\.)', geo_result) if g.strip()][:3]
 
     return {
         "competitors": competitors,
@@ -1034,7 +1125,7 @@ with st.sidebar:
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.markdown("**⚙️ 시뮬레이션 설정**")
     sim_count = st.slider("시뮬레이션 횟수", min_value=20, max_value=100, value=50, step=10,
-                          help="횟수가 높을수록 정밀 분석 모드 활성화 — 통계 신뢰도 향상")
+                          help="실제 API 호출은 최대 20회, 나머지는 통계 외삽")
 
     # ── [수정] API 연결 상태 — 각 엔진 독립 표시 ──
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
@@ -1245,14 +1336,33 @@ with tab1:
             target_url = normalize_url(url_auto)
             domain = extract_domain(target_url)
 
-            with st.spinner(f"**{domain}** 사이트 분석 중... 잠시만 기다려주세요."):
-                st.markdown("**📝 Step 1 — 타겟 질문 도출 중...**")
+            # ── Step 0: 심층 사이트 크롤링 & 비즈니스 분석 ──
+            biz_info = {}
+            with st.spinner(f"🔎 **{domain}** 비즈니스 실체 분석 중..."):
+                st.markdown("**🔎 Step 0 — 사이트 심층 크롤링 및 비즈니스 실체 파악 중...**")
+                try:
+                    biz_info = analyze_business_identity(
+                        client_gpt, client_gemini, target_url, gpt_model, client_gemini
+                    )
+                    st.success(f"✅ 비즈니스 분석 완료")
+                    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+                    col_b1.metric("브랜드명", biz_info.get("brand_name", "—"))
+                    col_b2.metric("업종", biz_info.get("industry", "—"))
+                    col_b3.metric("핵심 서비스", biz_info.get("core_product", "—")[:20])
+                    col_b4.metric("타겟 고객", biz_info.get("target_audience", "—")[:20])
+                    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.warning(f"사이트 분석 일부 실패 (기본값으로 진행): {e}")
+
+            with st.spinner(f"**{domain}** 질문 도출 중..."):
+                st.markdown("**📝 Step 1 — 비즈니스 전환형 타겟 질문 도출 중...**")
                 try:
                     questions = generate_target_questions(
                         client_gpt, client_gemini, target_url,
-                        question_engine, gpt_model, client_gemini
+                        question_engine, gpt_model, client_gemini,
+                        biz_info=biz_info,
                     )
-                    st.success(f"✅ TOP {len(questions)}개 질문 도출 완료")
+                    st.success(f"✅ TOP {len(questions)}개 전환형 질문 도출 완료")
                 except Exception as e:
                     st.error(f"질문 도출 실패: {e}")
                     questions = []
@@ -1272,38 +1382,49 @@ with tab1:
                     """, unsafe_allow_html=True)
 
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-                st.markdown("**📊 Step 2 — 각 질문별 시뮬레이션 진행 중...**")
+                st.markdown("**📊 Step 2 — 각 질문별 병렬 시뮬레이션 진행 중... (GPT·Gemini 동시 처리)**")
 
                 all_results = []
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                for idx, question in enumerate(questions):
-                    status_text.markdown(f"🔄 질문 {idx + 1}/{len(questions)}: *{question[:40]}...*")
-
-                    def make_callback(idx_outer, total):
-                        def cb(p):
-                            progress_bar.progress((idx_outer + p) / total)
-                        return cb
-
+                # ── 질문별 시뮬레이션을 병렬로 실행 ──
+                def _simulate_one(args):
+                    idx, question = args
                     try:
-                        result = run_simulation(
+                        return idx, run_simulation(
                             client_gpt, client_gemini,
                             question, target_url,
                             gpt_model, client_gemini,
                             n=sim_count,
-                            progress_callback=make_callback(idx, len(questions))
                         )
-                        all_results.append(result)
                     except Exception as e:
-                        st.warning(f"질문 {idx + 1} 시뮬레이션 오류: {e}")
-                        all_results.append({"gpt_rate": None, "gemini_rate": None, "gpt_hits": None, "gemini_hits": None, "total": sim_count})
+                        return idx, {"gpt_rate": None, "gemini_rate": None,
+                                     "gpt_hits": None, "gemini_hits": None,
+                                     "total": sim_count}
 
+                pending = list(enumerate(questions))
+                result_map = {}
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(questions))) as pool:
+                    future_to_idx = {pool.submit(_simulate_one, arg): arg[0] for arg in pending}
+                    done_count = 0
+                    for future in concurrent.futures.as_completed(future_to_idx):
+                        done_count += 1
+                        idx, res = future.result()
+                        result_map[idx] = res
+                        progress_bar.progress(done_count / len(questions))
+                        status_text.markdown(
+                            f"🔄 {done_count}/{len(questions)} 질문 완료 — "
+                            f"*{questions[idx][:40]}...*"
+                        )
+
+                all_results = [result_map[i] for i in range(len(questions))]
                 progress_bar.progress(1.0)
-                status_text.success("✅ 전체 시뮬레이션 완료!")
+                status_text.success("✅ 전체 병렬 시뮬레이션 완료!")
 
                 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-                render_bar_chart(all_results, questions, f"'{domain}' 질문별 AI 인용 점유율")
+                render_bar_chart(all_results, questions, f"'{biz_info.get('brand_name', domain)}' 질문별 AI 인용 점유율")
 
                 st.markdown("### 📋 질문별 상세 결과")
                 for i, (q, r) in enumerate(zip(questions, all_results)):
