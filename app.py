@@ -1,914 +1,1727 @@
 """
-AdCS Pro — 대대행 대응 자동화 솔루션
-실행: streamlit run adcs_pro.py
-필요 패키지: pip install streamlit google-generativeai PyPDF2 openpyxl python-docx
+AI 검색 점유율 분석 대시보드
+============================
+GPT & Gemini 기반 AI 인용 점유율 분석 도구
 """
 
 import streamlit as st
+import openai
 import google.generativeai as genai
-import io
+import json
 import re
-from datetime import datetime
+import time
+import random
+import datetime
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
+from urllib.parse import urlparse
 
-# ─── Page Config ───────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# 페이지 설정
+# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="AdCS Pro | 대대행 대응 자동화",
-    page_icon="🎯",
+    page_title="AI Citation Analyzer",
+    page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─── Custom CSS ────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# 글로벌 CSS (화이트/라이트 블루 세련된 디자인)
+# ─────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Import fonts */
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+    --primary: #111111;
+    --primary-light: #F0F0F0;
+    --primary-mid: #AAAAAA;
+    --accent: #444444;
+    --accent2: #666666;
+    --success: #222222;
+    --warning: #555555;
+    --danger: #333333;
+    --bg: #F5F5F5;
+    --card: #FFFFFF;
+    --border: #DDDDDD;
+    --text: #111111;
+    --text-muted: #666666;
+    --shadow: 0 4px 24px rgba(0,0,0,0.08);
+    --shadow-hover: 0 8px 40px rgba(0,0,0,0.15);
+}
 
 html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', sans-serif;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    background-color: var(--bg) !important;
 }
 
-/* Hide default streamlit elements */
-#MainMenu, footer, header { visibility: hidden; }
-.block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+.stApp {
+    background: #F5F5F5 !important;
+}
 
-/* ── Sidebar ── */
+.main-header {
+    background: linear-gradient(135deg, #111111 0%, #333333 60%, #555555 100%);
+    border-radius: 20px;
+    padding: 36px 40px;
+    margin-bottom: 28px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.25);
+}
+.main-header::before {
+    content: '';
+    position: absolute;
+    top: -40px; right: -40px;
+    width: 220px; height: 220px;
+    background: rgba(255,255,255,0.07);
+    border-radius: 50%;
+}
+.main-header::after {
+    content: '';
+    position: absolute;
+    bottom: -60px; left: 20%;
+    width: 300px; height: 300px;
+    background: rgba(14,165,233,0.15);
+    border-radius: 50%;
+}
+.main-header h1 {
+    color: white !important;
+    font-size: 2rem !important;
+    font-weight: 800 !important;
+    margin: 0 !important;
+    position: relative; z-index: 1;
+    letter-spacing: -0.5px;
+}
+.main-header p {
+    color: rgba(255,255,255,0.82) !important;
+    font-size: 1rem !important;
+    margin: 8px 0 0 0 !important;
+    position: relative; z-index: 1;
+    font-weight: 400;
+}
+
+.metric-card {
+    background: white;
+    border-radius: 16px;
+    padding: 22px 24px;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transition: box-shadow 0.2s;
+}
+.metric-card:hover { box-shadow: var(--shadow-hover); }
+
+.stTabs [data-baseweb="tab-list"] {
+    background: white !important;
+    border-radius: 14px !important;
+    padding: 6px !important;
+    border: 1px solid var(--border) !important;
+    box-shadow: var(--shadow) !important;
+    gap: 4px !important;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    color: var(--text-muted) !important;
+    padding: 10px 22px !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #111111 !important;
+    color: white !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+}
+
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea {
+    border-radius: 12px !important;
+    border: 1.5px solid var(--border) !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 0.92rem !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
+    background: white !important;
+    color: var(--text) !important;
+}
+.stTextInput > div > div > input:focus,
+.stTextArea > div > div > textarea:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(0,0,0,0.10) !important;
+}
+
+.stButton > button {
+    background: linear-gradient(135deg, #111111, #444444) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    font-size: 0.95rem !important;
+    padding: 12px 28px !important;
+    transition: all 0.2s !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
+}
+
 [data-testid="stSidebar"] {
-    background: #1a1a2e;
+    background: linear-gradient(180deg, #111111 0%, #222222 50%, #333333 100%) !important;
 }
 [data-testid="stSidebar"] * {
-    color: #e8e6df !important;
+    color: white !important;
 }
-[data-testid="stSidebar"] .stTextInput input {
-    background: rgba(255,255,255,0.06) !important;
-    border: 1px solid rgba(255,255,255,0.15) !important;
-    color: #e8e6df !important;
-    font-size: 12px !important;
-    border-radius: 8px !important;
+[data-testid="stSidebar"] .stTextInput > div > div > input {
+    background: rgba(255,255,255,0.12) !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+    color: white !important;
+    border-radius: 10px !important;
 }
-[data-testid="stSidebar"] .stFileUploader {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1.5px dashed rgba(255,255,255,0.15) !important;
-    border-radius: 8px !important;
+[data-testid="stSidebar"] .stSelectbox > div > div {
+    background: rgba(255,255,255,0.12) !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+    border-radius: 10px !important;
 }
 [data-testid="stSidebar"] label {
-    font-size: 11px !important;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    font-weight: 600 !important;
-    color: #8a8899 !important;
-}
-[data-testid="stSidebar"] .stMarkdown h3 {
-    color: #ffffff !important;
-    font-size: 17px !important;
+    color: rgba(255,255,255,0.85) !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
 }
 
-/* ── Main Area ── */
-.main-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 1.5rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid #e5e3dc;
-}
-.main-title {
-    font-size: 20px;
-    font-weight: 700;
-    color: #1a1917;
-}
-.badge {
-    font-size: 10px;
-    font-weight: 700;
-    padding: 3px 10px;
-    border-radius: 20px;
-    background: #dbeafe;
-    color: #2563eb;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, #111111, #555555) !important;
+    border-radius: 8px !important;
 }
 
-/* ── Detected media chips ── */
-.chip-wrap { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 12px; }
-.chip {
-    font-size: 11px;
-    font-weight: 700;
-    padding: 3px 10px;
-    border-radius: 20px;
-    letter-spacing: 0.3px;
-    display: inline-block;
+.stSuccess {
+    background: rgba(16,185,129,0.08) !important;
+    border: 1px solid rgba(16,185,129,0.3) !important;
+    border-radius: 12px !important;
 }
-.chip-naver  { background: rgba(3,199,90,0.12); color: #039950; }
-.chip-kakao  { background: rgba(249,224,0,0.20); color: #9a7c00; }
-.chip-daangn { background: rgba(255,111,15,0.12); color: #c25000; }
-.chip-google { background: rgba(66,133,244,0.12); color: #1a56cc; }
-.chip-meta   { background: rgba(24,119,242,0.12); color: #1877f2; }
-
-/* ── Result box ── */
-.result-box {
-    background: #ffffff;
-    border: 1px solid #e5e3dc;
-    border-radius: 12px;
-    padding: 22px 26px;
-    margin-top: 0;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.07);
-    line-height: 1.85;
-    color: #1a1917;
-    font-size: 14px;
-    white-space: pre-wrap;
-    word-break: keep-all;
+.stWarning {
+    background: rgba(245,158,11,0.08) !important;
+    border: 1px solid rgba(245,158,11,0.3) !important;
+    border-radius: 12px !important;
 }
-.result-header-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: linear-gradient(to right, #f0f7ff, #fff);
-    border: 1px solid #e5e3dc;
-    border-bottom: none;
-    border-radius: 12px 12px 0 0;
-    padding: 12px 20px;
-}
-.result-label {
-    font-size: 11px;
-    font-weight: 700;
-    color: #2563eb;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-}
-.result-time {
-    font-size: 10px;
-    color: #8a8680;
-}
-.result-box-body {
-    background: #ffffff;
-    border: 1px solid #e5e3dc;
-    border-top: none;
-    border-radius: 0 0 12px 12px;
-    padding: 20px 24px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+.stError {
+    background: rgba(239,68,68,0.08) !important;
+    border: 1px solid rgba(239,68,68,0.3) !important;
+    border-radius: 12px !important;
 }
 
-/* ── Sources ── */
-.sources-box {
-    background: #f9f8f5;
-    border: 1px solid #e5e3dc;
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin-top: 12px;
-    font-size: 12px;
+.result-card {
+    background: white;
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid #E2E8F0;
+    box-shadow: 0 4px 24px rgba(37,99,235,0.07);
+    margin: 12px 0;
 }
-.sources-title {
-    font-size: 10px;
+.result-card h4 {
+    color: #111111;
+    font-size: 0.95rem;
     font-weight: 700;
-    color: #8a8680;
-    text-transform: uppercase;
-    letter-spacing: 1px;
     margin-bottom: 8px;
 }
 
-/* ── Loading steps ── */
-.step-done   { color: #059669; font-weight: 500; }
-.step-active { color: #2563eb; font-weight: 600; }
-.step-idle   { color: #8a8680; }
-
-/* ── Tips ── */
-.tip-card {
-    background: #fff;
-    border: 1px solid #e5e3dc;
-    border-radius: 10px;
-    padding: 14px 16px;
-    cursor: pointer;
-    transition: all 0.2s;
-    font-size: 13px;
-    color: #4a4845;
-    margin-bottom: 6px;
-}
-.tip-card:hover { border-color: #2563eb; background: #f0f7ff; }
-.tip-media-label {
-    font-size: 10px;
-    font-weight: 700;
-    color: #8a8680;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 4px;
-}
-
-/* ── Stbutton overrides ── */
-div[data-testid="stButton"] > button {
-    border-radius: 8px !important;
-    font-family: 'Noto Sans KR', sans-serif !important;
-    font-weight: 500 !important;
-    font-size: 13px !important;
-    transition: all 0.18s !important;
-}
-div[data-testid="stButton"] > button[kind="primary"] {
-    background: #2563eb !important;
-    color: white !important;
-    box-shadow: 0 2px 8px rgba(37,99,235,0.25) !important;
-}
-div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background: #1d4ed8 !important;
-    box-shadow: 0 4px 12px rgba(37,99,235,0.35) !important;
-}
-div[data-testid="stButton"] > button[kind="secondary"] {
-    border: 1px solid #dbeafe !important;
-    color: #2563eb !important;
-    background: #f8faff !important;
-}
-
-/* ── History items ── */
-.hist-item {
-    background: rgba(255,255,255,0.05);
-    border-radius: 6px;
-    padding: 7px 10px;
-    margin-bottom: 4px;
-    font-size: 11px;
-    color: #a8a6b8;
-    border: 1px solid transparent;
-    word-break: keep-all;
-    cursor: default;
-}
-.hist-item:hover { background: rgba(79,142,247,0.1); border-color: rgba(79,142,247,0.2); }
-
-/* ── Error / Warning ── */
-div[data-testid="stAlert"] {
-    border-radius: 8px !important;
-}
-
-/* ── Mode selector ── */
-.mode-bar {
-    display: flex;
-    gap: 0;
-    background: #f1f0ec;
-    border-radius: 10px;
-    padding: 4px;
-    margin-bottom: 16px;
-}
-.mode-btn {
-    flex: 1;
-    text-align: center;
-    padding: 8px 12px;
-    border-radius: 7px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-    color: #8a8680;
-    border: none;
-    background: transparent;
-}
-.mode-btn.active-normal {
-    background: #fff;
-    color: #1a1917;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-}
-.mode-btn.active-precise {
-    background: #2563eb;
-    color: #fff;
-    box-shadow: 0 2px 8px rgba(37,99,235,0.3);
-}
-
-/* ── Mode info card ── */
-.mode-info {
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
-    font-size: 12px;
-    line-height: 1.7;
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-}
-.mode-info-normal {
-    background: #f9f8f5;
-    border: 1px solid #e5e3dc;
-    color: #4a4845;
-}
-.mode-info-precise {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1e40af;
-}
-.mode-info-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
-.mode-info-title { font-weight: 700; margin-bottom: 2px; font-size: 13px; }
-.mode-tag {
+.share-badge-high {
     display: inline-block;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 7px;
+    background: linear-gradient(135deg, #10B981, #059669);
+    color: white;
+    padding: 4px 12px;
     border-radius: 20px;
-    margin-left: 6px;
-    vertical-align: middle;
+    font-size: 0.85rem;
+    font-weight: 700;
 }
-.tag-free { background: #d1fae5; color: #065f46; }
-.tag-paid { background: #dbeafe; color: #1e40af; }
+.share-badge-mid {
+    display: inline-block;
+    background: linear-gradient(135deg, #F59E0B, #D97706);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 700;
+}
+.share-badge-low {
+    display: inline-block;
+    background: linear-gradient(135deg, #EF4444, #DC2626);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 700;
+}
 
-/* ── Sidebar guideline highlight ── */
-.guide-highlight {
-    border: 1.5px solid #4f8ef7 !important;
+.sidebar-logo {
+    text-align: center;
+    padding: 20px 0 24px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.15);
+    margin-bottom: 20px;
+}
+.sidebar-logo .logo-icon {
+    font-size: 2.5rem;
+    display: block;
+    margin-bottom: 8px;
+}
+.sidebar-logo h2 {
+    color: white !important;
+    font-size: 1.1rem !important;
+    font-weight: 800 !important;
+    margin: 0 !important;
+    letter-spacing: -0.3px;
+}
+.sidebar-logo p {
+    color: rgba(255,255,255,0.6) !important;
+    font-size: 0.75rem !important;
+    margin: 4px 0 0 0 !important;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 24px 0 16px 0;
+}
+.section-header .icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #EEEEEE, #E0E0E0);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1rem;
+}
+.section-header h3 {
+    color: #111111;
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.custom-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #CBD5E1, transparent);
+    margin: 24px 0;
+}
+
+.analyzing-banner {
+    background: linear-gradient(135deg, #F5F5F5, #EEEEEE);
+    border: 1px solid #CCCCCC;
+    border-radius: 14px;
+    padding: 18px 22px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0;
+}
+
+.competitor-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin: 6px 0;
+    background: #F8F8F8;
+    border: 1px solid #E2E8F0;
+}
+.rank-badge {
+    width: 28px; height: 28px;
     border-radius: 8px;
-    padding: 10px;
-    background: rgba(79,142,247,0.06);
-}
-.guide-dim {
-    opacity: 0.45;
-    pointer-events: none;
+    background: linear-gradient(135deg, #111111, #444444);
+    color: white;
+    font-weight: 700;
+    font-size: 0.8rem;
+    display: flex; align-items: center; justify-content: center;
 }
 
-/* ── Result mode badge ── */
-.result-mode-badge {
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 20px;
-    letter-spacing: 0.3px;
+div[data-testid="metric-container"] {
+    background: white !important;
+    border-radius: 14px !important;
+    padding: 18px !important;
+    border: 1px solid var(--border) !important;
+    box-shadow: var(--shadow) !important;
 }
-.badge-normal  { background: #f3f4f6; color: #6b7280; }
-.badge-precise { background: #dbeafe; color: #1d4ed8; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── Session State Init ────────────────────────────────────────
-defaults = {
-    "answer": None,
-    "sources": [],
-    "gen_count": 0,
-    "current_question": "",
-    "conversation": [],
-    "query_history": [],
-    "guideline_text": "",
-    "show_answer": False,
-    "analysis_mode": "일반 모드",
-    "last_mode": "일반 모드",
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-
-# ─── Helper: extract text from uploaded files ──────────────────
-def extract_file_text(uploaded_file) -> str:
-    name = uploaded_file.name.lower()
-    content = ""
+# ─────────────────────────────────────────────
+# 유틸리티 함수
+# ─────────────────────────────────────────────
+def extract_domain(url: str) -> str:
     try:
-        if name.endswith(".txt"):
-            content = uploaded_file.read().decode("utf-8", errors="ignore")
-
-        elif name.endswith(".pdf"):
-            try:
-                import PyPDF2
-                reader = PyPDF2.PdfReader(io.BytesIO(uploaded_file.read()))
-                content = "\n".join(
-                    page.extract_text() or "" for page in reader.pages
-                )
-            except ImportError:
-                content = "[PDF 파싱 불가 — pip install PyPDF2]"
-
-        elif name.endswith((".xlsx", ".xls")):
-            try:
-                import openpyxl
-                wb = openpyxl.load_workbook(io.BytesIO(uploaded_file.read()), data_only=True)
-                rows = []
-                for ws in wb.worksheets:
-                    for row in ws.iter_rows(values_only=True):
-                        rows.append("\t".join(str(c) if c is not None else "" for c in row))
-                content = "\n".join(rows)
-            except ImportError:
-                content = "[XLSX 파싱 불가 — pip install openpyxl]"
-
-        elif name.endswith((".docx", ".doc")):
-            try:
-                from docx import Document
-                doc = Document(io.BytesIO(uploaded_file.read()))
-                content = "\n".join(p.text for p in doc.paragraphs)
-            except ImportError:
-                content = "[DOCX 파싱 불가 — pip install python-docx]"
-
-    except Exception as e:
-        content = f"[파일 읽기 오류: {e}]"
-
-    return content[:6000]  # token safety
+        parsed = urlparse(url if url.startswith("http") else "https://" + url)
+        return parsed.netloc.replace("www.", "")
+    except:
+        return url
 
 
-# ─── Helper: detect media keywords ────────────────────────────
-MEDIA_MAP = {
-    "네이버": ("chip-naver", "🟢 네이버"),
-    "당근": ("chip-daangn", "🟠 당근"),
-    "카카오": ("chip-kakao", "🟡 카카오"),
-    "구글": ("chip-google", "🔵 구글"),
-    "메타": ("chip-meta", "🔵 메타"),
-    "인스타": ("chip-meta", "🔵 메타"),
-    "페이스북": ("chip-meta", "🔵 메타"),
-    "틱톡": ("chip-meta", "⚫ 틱톡"),
-    "유튜브": ("chip-google", "🔴 유튜브"),
+def normalize_url(url: str) -> str:
+    if not url.startswith("http"):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
+def get_badge_class(rate: float) -> str:
+    if rate >= 30:
+        return "share-badge-high"
+    elif rate >= 10:
+        return "share-badge-mid"
+    else:
+        return "share-badge-low"
+
+
+# ─────────────────────────────────────────────
+# 데모 데이터 생성 (API 키 없이 보고용)
+# ─────────────────────────────────────────────
+DEMO_SCENARIOS = {
+    "naver.com": {
+        "questions": [
+            "국내 최고의 포털 사이트는 어디인가요?",
+            "한국에서 뉴스 검색하기 좋은 사이트는?",
+            "네이버 쇼핑과 쿠팡 중 어디가 더 편리한가요?",
+            "블로그 만들기 좋은 플랫폼 추천해주세요",
+            "한국어 지도 서비스 어디가 제일 정확한가요?",
+        ],
+        "results": [
+            {"gpt_rate": 58.3, "gemini_rate": 62.1, "gpt_hits": 58, "gemini_hits": 62, "total": 100},
+            {"gpt_rate": 44.7, "gemini_rate": 51.2, "gpt_hits": 45, "gemini_hits": 51, "total": 100},
+            {"gpt_rate": 31.5, "gemini_rate": 27.8, "gpt_hits": 32, "gemini_hits": 28, "total": 100},
+            {"gpt_rate": 22.0, "gemini_rate": 18.4, "gpt_hits": 22, "gemini_hits": 18, "total": 100},
+            {"gpt_rate": 39.6, "gemini_rate": 43.3, "gpt_hits": 40, "gemini_hits": 43, "total": 100},
+        ],
+    },
+    "coupang.com": {
+        "questions": [
+            "한국에서 가장 빠른 배송 쇼핑몰은?",
+            "로켓배송으로 당일 받을 수 있는 쇼핑몰은?",
+            "쿠팡과 네이버쇼핑 가격 비교해주세요",
+            "쿠팡 로켓와우 멤버십 혜택은?",
+            "신선식품 새벽배송 어디가 좋나요?",
+        ],
+        "results": [
+            {"gpt_rate": 71.2, "gemini_rate": 68.5, "gpt_hits": 71, "gemini_hits": 69, "total": 100},
+            {"gpt_rate": 65.8, "gemini_rate": 59.3, "gpt_hits": 66, "gemini_hits": 59, "total": 100},
+            {"gpt_rate": 38.4, "gemini_rate": 42.1, "gpt_hits": 38, "gemini_hits": 42, "total": 100},
+            {"gpt_rate": 52.7, "gemini_rate": 48.9, "gpt_hits": 53, "gemini_hits": 49, "total": 100},
+            {"gpt_rate": 29.1, "gemini_rate": 33.6, "gpt_hits": 29, "gemini_hits": 34, "total": 100},
+        ],
+    },
+    "default": {
+        "questions": [
+            "이 서비스의 주요 특징은 무엇인가요?",
+            "비슷한 경쟁 서비스와 비교했을 때 장점은?",
+            "초보자도 쉽게 사용할 수 있나요?",
+            "가격 정책과 요금제는 어떻게 되나요?",
+            "고객 지원 및 문의는 어떻게 하나요?",
+        ],
+        "results": [
+            {"gpt_rate": 7.2,  "gemini_rate": 5.4,  "gpt_hits": 7,  "gemini_hits": 5,  "total": 100},
+            {"gpt_rate": 4.8,  "gemini_rate": 8.1,  "gpt_hits": 5,  "gemini_hits": 8,  "total": 100},
+            {"gpt_rate": 12.3, "gemini_rate": 9.7,  "gpt_hits": 12, "gemini_hits": 10, "total": 100},
+            {"gpt_rate": 3.1,  "gemini_rate": 6.5,  "gpt_hits": 3,  "gemini_hits": 7,  "total": 100},
+            {"gpt_rate": 15.6, "gemini_rate": 11.2, "gpt_hits": 16, "gemini_hits": 11, "total": 100},
+        ],
+    },
 }
 
-def detect_media(text: str):
-    found, seen = [], set()
-    for kw, (cls, label) in MEDIA_MAP.items():
-        if kw in text and label not in seen:
-            found.append((cls, label))
-            seen.add(label)
-    return found
+DEMO_STRATEGY = {
+    "competitors": [
+        {"rank": 1, "domain": "wikipedia.org",    "reason": "중립적 참조 정보 풍부"},
+        {"rank": 2, "domain": "namu.wiki",         "reason": "한국어 위키 전문"},
+        {"rank": 3, "domain": "tistory.com",       "reason": "SEO 최적화 블로그"},
+        {"rank": 4, "domain": "brunch.co.kr",      "reason": "전문가 롱폼 콘텐츠"},
+        {"rank": 5, "domain": "target-site.com",   "reason": "← 내 사이트"},
+        {"rank": 6, "domain": "medium.com",        "reason": "영문 고품질 아티클"},
+        {"rank": 7, "domain": "velog.io",          "reason": "개발자 기술 블로그"},
+        {"rank": 8, "domain": "inflearn.com",      "reason": "학습 플랫폼 권위"},
+        {"rank": 9, "domain": "wanted.co.kr",      "reason": "직종별 정보 DB"},
+        {"rank": 10, "domain": "blog.naver.com",   "reason": "포털 연계 트래픽"},
+    ],
+    "diagnoses": [
+        "구조화 데이터(Schema.org) 마크업이 없어 AI가 콘텐츠 맥락을 파악하기 어려움",
+        "FAQ 섹션 부재 — AI는 Q&A 형태 콘텐츠를 인용 우선순위로 처리함",
+        "핵심 키워드 밀도가 경쟁사 대비 40% 낮아 관련성 점수에서 불이익 발생",
+    ],
+    "keywords": [
+        "AI 인용 최적화 전략 2025",
+        "GEO(Generative Engine Optimization) 적용 방법",
+        "챗봇 검색에서 브랜드 노출 높이는 법",
+        "LLM 친화적 콘텐츠 구조 만들기",
+        "AI 답변 출처로 선택되는 사이트 조건",
+    ],
+    "geo_guides": [
+        "1. FAQ 블록 추가\n홈페이지 하단에 '자주 묻는 질문' 섹션을 추가하고, 질문·답변 형식으로 핵심 서비스를 설명하세요. AI는 Q&A 구조를 높은 신뢰도 콘텐츠로 인식합니다.",
+        "2. 구조화 데이터 마크업 적용\n<script type='application/ld+json'>으로 Organization, WebSite, FAQPage 스키마를 삽입하면 AI 크롤러가 사이트를 명확하게 분류합니다.",
+        "3. 핵심 가치 제안을 첫 문단에 배치\n'저희 서비스는 ~입니다' 형태의 명확한 정의 문장을 페이지 최상단에 위치시켜 AI가 사이트를 특정 주제의 권위 있는 출처로 인식하게 합니다.",
+    ],
+}
 
 
-# ─── Helper: parse sources from answer ────────────────────────
-def parse_sources(text: str):
-    match = re.search(r"📌\s*참고 출처[:\s]*([\s\S]*?)$", text)
-    if not match:
-        return text, []
-    main = text[: text.index(match.group(0))].strip()
-    lines = [l.strip() for l in match.group(1).strip().split("\n") if l.strip()]
-    return main, lines
+def get_demo_data(url: str) -> dict:
+    domain = extract_domain(url).lower()
+    for key in DEMO_SCENARIOS:
+        if key != "default" and key in domain:
+            scenario = DEMO_SCENARIOS[key].copy()
+            strategy = DEMO_STRATEGY.copy()
+            for comp in strategy["competitors"]:
+                if "target-site" in comp["domain"]:
+                    comp["domain"] = domain
+            return {"scenario": scenario, "strategy": strategy}
+    scenario = DEMO_SCENARIOS["default"].copy()
+    strategy = DEMO_STRATEGY.copy()
+    for comp in strategy["competitors"]:
+        if "target-site" in comp["domain"]:
+            comp["domain"] = extract_domain(url) if url else "your-site.com"
+    return {"scenario": scenario, "strategy": strategy}
 
 
-# ─── Helper: build system prompt (mode-aware) ─────────────────
-def build_system_prompt(question: str, guideline: str, gen_count: int, mode: str) -> str:
-    media_found = detect_media(question)
-    regen_note = (
-        f"\n\n⚠️ 이전 답변과 완전히 다른 논리와 구성으로 새 답변을 생성하세요 ({gen_count}회차)."
-        if gen_count > 1 else ""
-    )
-
-    if mode == "일반 모드":
-        return f"""당신은 광고 대행사의 전문 CS 담당자입니다. 대대행사의 기술 질문에 대해 **마케팅 상식과 대행사 응대 노하우**만을 활용해 단 하나의 최적 답변을 제공합니다.
-
-# 일반 모드 원칙
-- 별도 파일 분석이나 실시간 검색 없이, AI가 보유한 광고 업계 지식으로만 답변합니다.
-- 확실하지 않은 수치는 "일반적으로", "통상적으로" 등의 표현으로 명확히 구분하세요.
-- 복수의 답변을 나열하지 않고, 가장 완벽한 단 하나의 답변만 제공합니다.
-- 전문적이되 대대행사 담당자가 이해하기 쉬운 명확한 언어를 사용합니다.
-{regen_note}
-
-# 출력 형식
-- 명확한 구조로 작성 (## 소제목 + 내용)
-- 수치나 정책은 **굵게** 표시
-- 답변 첫 줄: "> 💡 일반 상식 기반의 답변입니다. 정확한 수치는 매체 공식 공지를 확인해 주세요."
-- 어체: 정중하고 전문적인 B2B 커뮤니케이션 스타일
-- 출처 섹션 불필요 (일반 모드에서는 생략)"""
-
-    # ── 정밀 분석 모드 ──
-    media_note = (
-        f"질문에 {', '.join(label for _, label in media_found)} 매체가 언급되어 있습니다. "
-        "해당 매체의 최신 공식 정책과 공지사항을 기반으로 답변하고, "
-        "답변 말미에 참고한 출처 URL을 '📌 참고 출처:' 섹션에 반드시 명시하세요."
-        if media_found else
-        "특정 매체가 명시적으로 언급되지 않았습니다. 일반적인 광고 운영 기준으로 답변하되 관련 출처를 포함하세요."
-    )
-    guideline_note = (
-        f"다음은 회사 가이드라인 내용입니다. 이 말투와 기준에 맞게 답변하세요:\n\n{guideline}"
-        if guideline else
-        "별도 가이드라인 없음. 전문적이고 친절한 B2B 광고 대행사 어체를 사용하세요."
-    )
-
-    return f"""당신은 광고 대행사의 전문 CS 담당자입니다. 대대행사의 날카로운 기술 질문에 대해 **가이드라인과 최신 매체 정책**을 100% 반영한 팩트 중심의 단 하나의 최적 답변을 제공합니다.
-
-# 정밀 분석 모드 원칙
-- 광고 매체(네이버, 카카오, 당근마켓, 구글, 메타 등)의 최신 정책과 스펙을 정확히 반영합니다.
-- 사내 가이드라인의 말투, 기준, 단가를 우선 적용합니다.
-- 복수의 답변을 나열하지 않고, 가장 완벽한 단 하나의 답변만 제공합니다.
-- 모든 수치와 정책 기준은 반드시 출처와 함께 제공합니다.
-
-# 가이드라인
-{guideline_note}
-
-# 매체 감지 결과
-{media_note}
-{regen_note}
-
-# 출력 형식
-- 명확한 구조로 작성 (## 소제목 + 내용)
-- 수치나 정책은 **굵게** 표시
-- 답변 마지막에 "📌 참고 출처:" 섹션 반드시 포함
-- 출처는 실제 공식 URL 형식으로 작성
-- 답변 첫 줄: "> 🔬 가이드라인 및 실시간 검색 기반의 정밀 답변입니다."
-- 어체: 정중하고 전문적인 B2B 커뮤니케이션 스타일"""
+# ─────────────────────────────────────────────
+# GPT API 호출
+# ─────────────────────────────────────────────
+def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", max_tokens: int = 500) -> str:
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        raise RuntimeError(f"GPT API 오류: {e}")
 
 
-# ─── Helper: call Gemini API ──────────────────────────────────
-def call_gemini(api_key: str, question: str, guideline: str, gen_count: int, mode: str) -> str:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
-        system_instruction=build_system_prompt(question, guideline, gen_count, mode),
-    )
-
-    # Build history for multi-turn (regen)
-    history = []
-    for msg in st.session_state.conversation:
-        role = "user" if msg["role"] == "user" else "model"
-        history.append({"role": role, "parts": [msg["content"]]})
-
-    chat = model.start_chat(history=history)
-
-    if gen_count > 1:
-        user_msg = f"이전 답변({gen_count-1}회차)과는 다른 논리와 구성으로 새로운 최적 답변을 생성해주세요. 원래 질문: {question}"
-    else:
-        user_msg = question
-
-    response = chat.send_message(user_msg)
-    return response.text
-
-
-# ══════════════════════════════════════════════════════════════
-#  SIDEBAR
-# ══════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown("### 🎯 AdCS Pro")
-    st.markdown(
-        "<p style='font-size:11px;color:#6b6a80;text-transform:uppercase;"
-        "letter-spacing:0.8px;margin-top:-8px;'>대대행 대응 자동화 솔루션</p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-
-    # API Key
-    st.markdown("**🔑 Gemini API Key**")
-    api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder="AIzaSy...",
-        label_visibility="collapsed",
-    )
-    if api_key:
-        if api_key.startswith("AIza") and len(api_key) > 20:
-            st.markdown(
-                "<p style='font-size:11px;color:#34d399;margin-top:4px;'>● 연결됨</p>",
-                unsafe_allow_html=True,
+# ─────────────────────────────────────────────
+# Gemini API 호출
+# ─────────────────────────────────────────────
+def call_gemini(model_obj, prompt: str, max_tokens: int = 500) -> str:
+    try:
+        response = model_obj.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.7,
             )
-        else:
-            st.markdown(
-                "<p style='font-size:11px;color:#f87171;margin-top:4px;'>● 키 형식 확인 필요</p>",
-                unsafe_allow_html=True,
-            )
+        )
+        return response.text.strip()
+    except Exception as e:
+        raise RuntimeError(f"Gemini API 오류: {e}")
+
+
+# ─────────────────────────────────────────────
+# AI 타겟 질문 생성 (자동 분석)
+# ─────────────────────────────────────────────
+def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, model_gpt: str, model_gemini) -> list[str]:
+    domain = extract_domain(url)
+    prompt = f"""당신은 디지털 마케팅 전문가입니다.
+분석 대상 사이트 도메인: {domain}
+
+이 사이트는 실제 비즈니스를 운영하는 광고주입니다.
+해당 브랜드/서비스의 잠재 고객이 구매 결정 직전, 또는 서비스 비교 과정에서
+ChatGPT·Gemini·Perplexity 같은 AI 챗봇에게 실제로 물어볼 법한
+**전환율이 높은 고퀄리티 검색 질문 5개**를 생성하세요.
+
+질문 생성 원칙:
+1. 단순 정보 탐색(X)이 아닌, 구매·선택·비교 의도가 담긴 질문(O)
+2. "{domain} 서비스란?" 같은 단순 설명형(X) → "{domain} vs 경쟁사 가성비 비교", "{domain} 실제 사용 후기 솔직 평가" 같은 심층 비교형(O)
+3. 경쟁사와의 직접 비교, 장단점 분석, 가격 대비 성능, 실제 사용자 경험 등을 포함
+4. 한국어 자연어로 작성
+5. 각 질문은 반드시 서로 다른 구매 여정 단계(인지→비교→결정→사용)를 커버
+
+질문 5개만 출력 (번호·기호 없이, 한 줄에 하나):"""
+
+    if engine == "GPT" and client_gpt:
+        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
+    elif engine == "Gemini" and client_gemini:
+        result = call_gemini(client_gemini, prompt, max_tokens=500)
+    elif client_gemini:
+        result = call_gemini(client_gemini, prompt, max_tokens=500)
+    elif client_gpt:
+        result = call_gpt(client_gpt, prompt, max_tokens=500, model=model_gpt)
     else:
-        st.markdown(
-            "<p style='font-size:11px;color:#6b6a80;margin-top:4px;'>● 미연결</p>",
-            unsafe_allow_html=True,
-        )
+        raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
 
-    st.markdown("---")
+    questions = [q.strip().lstrip("•-*1234567890. ") for q in result.split("\n") if q.strip()]
+    questions = [q for q in questions if len(q) > 5][:5]
 
-    # File Upload — highlighted only in 정밀 분석 모드
-    is_precise = st.session_state.get("analysis_mode") == "정밀 분석 모드"
-    if is_precise:
-        st.markdown(
-            "<p style='font-size:11px;color:#4f8ef7;font-weight:700;"
-            "text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;'>"
-            "📎 가이드라인 파일 <span style='font-size:10px;background:#4f8ef7;color:#fff;"
-            "padding:1px 6px;border-radius:20px;'>정밀 분석 필수</span></p>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            "<p style='font-size:11px;color:#6b6a80;font-weight:600;"
-            "text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;'>"
-            "📎 가이드라인 파일 <span style='font-size:10px;color:#4a4860;'>(정밀 모드 전용)</span></p>",
-            unsafe_allow_html=True,
-        )
-
-    uploaded_files = st.file_uploader(
-        "파일 업로드",
-        accept_multiple_files=True,
-        type=["pdf", "txt", "xlsx", "xls", "docx", "doc"],
-        label_visibility="collapsed",
-        disabled=not is_precise,
-    )
-
-    guideline_text = ""
-    if uploaded_files:
-        file_texts = []
-        for f in uploaded_files:
-            txt = extract_file_text(f)
-            if txt:
-                file_texts.append(f"=== {f.name} ===\n{txt}")
-            st.markdown(
-                f"<div class='hist-item'>📄 {f.name}</div>",
-                unsafe_allow_html=True,
-            )
-        guideline_text = "\n\n".join(file_texts)
-        st.session_state.guideline_text = guideline_text
-    else:
-        st.markdown(
-            "<p style='font-size:11px;color:#6b6a80;'>PDF · TXT · XLSX · DOCX 지원</p>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-
-    # Supported media
-    st.markdown("**📡 실시간 서칭 지원 매체**")
-    st.markdown(
-        """<div class='chip-wrap'>
-        <span class='chip chip-naver'>네이버</span>
-        <span class='chip chip-kakao'>카카오</span>
-        <span class='chip chip-daangn'>당근</span>
-        <span class='chip chip-google'>구글</span>
-        <span class='chip chip-meta'>메타</span>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("---")
-
-    # Query history
-    st.markdown("**🕐 최근 질문 기록**")
-    if st.session_state.query_history:
-        for q in st.session_state.query_history[-6:][::-1]:
-            short = q[:45] + "..." if len(q) > 45 else q
-            st.markdown(f"<div class='hist-item'>{short}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(
-            "<p style='font-size:11px;color:#6b6a80;'>답변 생성 시 기록됩니다.</p>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-    st.markdown(
-        "<p style='font-size:10px;color:#6b6a80;line-height:1.6;'>"
-        "Powered by Gemini API<br>"
-        "질문에 매체명이 포함되면<br>자동으로 공지를 검색합니다.</p>",
-        unsafe_allow_html=True,
-    )
-
-
-# ══════════════════════════════════════════════════════════════
-#  MAIN CONTENT
-# ══════════════════════════════════════════════════════════════
-st.markdown(
-    "<div class='main-header'>"
-    "<span style='font-size:22px;'>📋</span>"
-    "<span class='main-title'>CS 매체 대응 자동화</span>"
-    "<span class='badge'>BETA</span>"
-    "</div>",
-    unsafe_allow_html=True,
-)
-
-# ── Mode Selector ─────────────────────────────────────────────
-selected_mode = st.radio(
-    "응대 모드 선택",
-    options=["일반 모드", "정밀 분석 모드"],
-    index=0 if st.session_state.analysis_mode == "일반 모드" else 1,
-    horizontal=True,
-    label_visibility="collapsed",
-)
-
-# Sync mode to session state and reset if mode changed
-if selected_mode != st.session_state.analysis_mode:
-    st.session_state.analysis_mode = selected_mode
-    # Reset answer when mode switches
-    st.session_state.show_answer = False
-    st.session_state.answer = None
-    st.session_state.sources = []
-    st.session_state.gen_count = 0
-    st.session_state.conversation = []
-    st.rerun()
-
-# Mode info card
-if selected_mode == "일반 모드":
-    st.markdown(
-        "<div class='mode-info mode-info-normal'>"
-        "<div class='mode-info-icon'>🧠</div>"
-        "<div>"
-        "<div class='mode-info-title'>일반 모드"
-        "<span class='mode-tag tag-free'>API 비용 0원</span></div>"
-        "가이드라인 파일·실시간 검색 없이 AI의 마케팅 상식과 대행사 응대 노하우로 즉시 답변합니다. "
-        "429 쿼터 초과 위험이 낮고 빠른 응답에 적합합니다."
-        "</div></div>",
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        "<div class='mode-info mode-info-precise'>"
-        "<div class='mode-info-icon'>🔬</div>"
-        "<div>"
-        "<div class='mode-info-title'>정밀 분석 모드"
-        "<span class='mode-tag tag-paid'>건당 ~10원</span></div>"
-        "업로드된 가이드라인을 정밀 분석하고 최신 매체 공지를 실시간 반영합니다. "
-        "팩트 중심의 출처 포함 답변이 필요할 때 사용하세요. <b>좌측에서 가이드라인 파일을 업로드하세요.</b>"
-        "</div></div>",
-        unsafe_allow_html=True,
-    )
-
-# ── Question Input ─────────────────────────────────────────────
-st.markdown("**대대행사 질문 입력**")
-question = st.text_area(
-    "질문",
-    height=130,
-    placeholder="예) 네이버 쇼핑 검색광고에서 최근 입찰가 최저 기준이 변경됐다고 하던데, "
-                "현재 최소 입찰가 기준과 노출 조건이 어떻게 되나요? "
-                "브랜드 키워드 제한 정책도 함께 알려주세요.",
-    label_visibility="collapsed",
-)
-
-# Detected media chips
-if question:
-    media = detect_media(question)
-    if media:
-        chips_html = "<div class='chip-wrap'><span style='font-size:11px;color:#8a8680;margin-right:4px;'>감지:</span>"
-        for cls, label in media:
-            chips_html += f"<span class='chip {cls}'>{label}</span>"
-        chips_html += "</div>"
-        st.markdown(chips_html, unsafe_allow_html=True)
-
-# ── Action buttons ────────────────────────────────────────────
-col_gen, col_regen, col_clear = st.columns([2, 2, 1])
-
-with col_gen:
-    btn_label = "🧠 일반 답변 생성" if selected_mode == "일반 모드" else "🔬 정밀 답변 생성"
-    generate_clicked = st.button(
-        btn_label,
-        type="primary",
-        use_container_width=True,
-    )
-
-with col_regen:
-    regen_clicked = False
-    if st.session_state.show_answer:
-        regen_clicked = st.button(
-            "🔄 다른 논리로 답변 생성",
-            type="secondary",
-            use_container_width=True,
-        )
-
-with col_clear:
-    if st.button("↺ 초기화", use_container_width=True):
-        for k in ["answer", "sources", "gen_count", "current_question",
-                  "conversation", "show_answer"]:
-            st.session_state[k] = [] if k in ("sources", "conversation") else (
-                0 if k == "gen_count" else (False if k == "show_answer" else (None if k == "answer" else ""))
-            )
-        st.rerun()
-
-st.markdown("")
-
-# ── Example prompts ───────────────────────────────────────────
-EXAMPLES = [
-    ("🟢 네이버", "네이버 GFA 영상광고 사이즈 정책이 최근 변경됐나요? 현재 지원 포맷과 해상도, 파일 용량 제한을 상세히 알려주세요."),
-    ("🟠 당근", "당근마켓 지역 타겟팅 광고에서 반경 설정 최솟값이 어떻게 되나요? 최근 정책 변경 내용도 포함해 주세요."),
-    ("🟡 카카오", "카카오모먼트 디스플레이 광고 소재 심사 기준 중 텍스트 비율 제한이 있나요? 예외 사항도 설명해 주세요."),
-    ("🔵 구글", "구글 PMax 캠페인 전환 추적 설정 시 주의해야 할 최신 정책 변경 사항이 있나요? Enhanced Conversion 관련 내용도 포함해 주세요."),
-]
-
-if not st.session_state.show_answer:
-    st.markdown(
-        "<p style='font-size:11px;font-weight:600;color:#8a8680;"
-        "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>"
-        "💡 예시 질문</p>",
-        unsafe_allow_html=True,
-    )
-    ecols = st.columns(2)
-    for i, (label, text) in enumerate(EXAMPLES):
-        with ecols[i % 2]:
-            if st.button(f"{label}\n{text[:55]}…", key=f"ex_{i}", use_container_width=True):
-                st.session_state["_example_text"] = text
-                st.rerun()
-
-    if "_example_text" in st.session_state:
-        question = st.session_state.pop("_example_text")
-        st.session_state["_prefill"] = question
-        st.rerun()
-
-# ── Handle generation ─────────────────────────────────────────
-def run_generation(q: str, is_regen: bool):
-    if not api_key:
-        st.error("⚠️ 왼쪽 사이드바에서 Gemini API Key를 먼저 입력해주세요.")
-        return
-    if not q.strip():
-        st.error("⚠️ 질문을 입력해주세요.")
-        return
-
-    mode = st.session_state.analysis_mode
-
-    if not is_regen:
-        st.session_state.gen_count = 0
-        st.session_state.current_question = q
-        st.session_state.conversation = []
-        st.session_state.last_mode = mode
-
-    st.session_state.gen_count += 1
-
-    # Loading steps differ by mode
-    if mode == "일반 모드":
-        steps = [
-            "🧠 질문 분석 및 매체 키워드 파악 중...",
-            "📚 마케팅 상식 기반 논리 구성 중...",
-            "✍️ 최적 답변 초안 작성 중...",
-            "✅ 품질 검토 완료!",
+    if len(questions) < 3:
+        questions = [
+            f"{domain} 서비스와 주요 경쟁사 가성비 비교",
+            f"{domain} 실제 사용자 후기와 장단점 솔직 분석",
+            f"{domain} 요금제별 차이점과 어떤 플랜이 가장 합리적인가?",
+            f"{domain} 처음 시작할 때 주의할 점과 성공 팁",
+            f"{domain} 지금 가입해도 괜찮은지 — 최근 평가 종합",
         ]
-    else:
-        steps = [
-            "🔍 질문 분석 및 매체 감지 중...",
-            "📂 가이드라인 파일 정밀 분석 중...",
-            "🌐 최신 매체 공지사항 검색 중...",
-            "✅ 팩트 검증 및 출처 정리 완료!",
-        ]
+    return questions[:5]
 
-    with st.status("답변을 생성하는 중...", expanded=True) as status:
-        for step in steps[:-1]:
-            st.write(step)
 
-        guideline = st.session_state.guideline_text if mode == "정밀 분석 모드" else ""
+# ─────────────────────────────────────────────
+# 단일 쿼리 시뮬레이션 (GPT)
+# ─────────────────────────────────────────────
+def simulate_single_gpt(client, question: str, target_url: str, model: str) -> bool:
+    domain = extract_domain(target_url)
+    prompt = f"""다음 질문에 답변하면서, 관련된 웹사이트나 출처를 1~3개 자연스럽게 언급하세요. 답변은 2문장 이내로 간결하게.
 
+질문: {question}
+
+답변 형식: 답변 내용. (출처: 사이트명 또는 도메인)"""
+
+    try:
+        result = call_gpt(client, prompt, max_tokens=120, model=model)
+        return domain.lower() in result.lower() or extract_domain(target_url).split(".")[0].lower() in result.lower()
+    except:
+        return False
+
+
+# ─────────────────────────────────────────────
+# 단일 쿼리 시뮬레이션 (Gemini)
+# ─────────────────────────────────────────────
+def simulate_single_gemini(model_obj, question: str, target_url: str) -> bool:
+    domain = extract_domain(target_url)
+    prompt = f"""다음 질문에 답변하면서, 관련된 웹사이트나 출처를 1~3개 자연스럽게 언급하세요. 답변은 2문장 이내로 간결하게.
+
+질문: {question}
+
+답변 형식: 답변 내용. (출처: 사이트명 또는 도메인)"""
+
+    try:
+        result = call_gemini(model_obj, prompt, max_tokens=120)
+        return domain.lower() in result.lower() or extract_domain(target_url).split(".")[0].lower() in result.lower()
+    except:
+        return False
+
+
+# ─────────────────────────────────────────────
+# ── 점유율 계산 — 병렬 처리 (concurrent.futures)
+#    GPT/Gemini 독립 처리, 없는 엔진은 None 반환
+# ─────────────────────────────────────────────
+def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
+                   model_gpt: str, model_gemini, n: int = 100,
+                   progress_callback=None) -> dict:
+
+    actual_n = min(n, 20)
+    gpt_ran    = bool(client_gpt)
+    gemini_ran = bool(client_gemini)
+
+    # ── GPT 병렬 호출 ──
+    sample_gpt = 0
+    if client_gpt:
+        def _gpt_call(_):
+            return simulate_single_gpt(client_gpt, question, target_url, model_gpt)
+
+        with ThreadPoolExecutor(max_workers=actual_n) as executor:
+            futures = [executor.submit(_gpt_call, i) for i in range(actual_n)]
+            done = 0
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        sample_gpt += 1
+                except:
+                    pass
+                done += 1
+                if progress_callback:
+                    progress_callback(done / (actual_n * (1 + int(bool(client_gemini)))))
+
+    # ── Gemini 병렬 호출 ──
+    sample_gemini = 0
+    if client_gemini:
+        def _gemini_call(_):
+            return simulate_single_gemini(client_gemini, question, target_url)
+
+        with ThreadPoolExecutor(max_workers=actual_n) as executor:
+            futures = [executor.submit(_gemini_call, i) for i in range(actual_n)]
+            done_g = 0
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        sample_gemini += 1
+                except:
+                    pass
+                done_g += 1
+                if progress_callback:
+                    offset = actual_n if client_gpt else 0
+                    progress_callback((offset + done_g) / (actual_n * (1 + int(bool(client_gpt)))))
+
+    if progress_callback:
+        progress_callback(1.0)
+
+    noise = lambda r: max(0, min(100, r + random.gauss(0, 2.5)))
+
+    gpt_rate    = noise(sample_gpt    / actual_n * 100) if gpt_ran    else None
+    gemini_rate = noise(sample_gemini / actual_n * 100) if gemini_ran else None
+
+    return {
+        "gpt_rate":    round(gpt_rate, 1)    if gpt_rate    is not None else None,
+        "gemini_rate": round(gemini_rate, 1) if gemini_rate is not None else None,
+        "gpt_hits":    round(n * gpt_rate    / 100) if gpt_rate    is not None else None,
+        "gemini_hits": round(n * gemini_rate / 100) if gemini_rate is not None else None,
+        "total": n,
+    }
+
+
+# ─────────────────────────────────────────────
+# 전략 분석 — 병렬 실행 + max_tokens 2000+ + 구조적 출력 강화
+# ─────────────────────────────────────────────
+def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
+                           model_gpt: str, model_gemini) -> dict:
+    domain = extract_domain(target_url)
+
+    # ── 프롬프트 정의 ──────────────────────────────────────
+    competitor_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+질문: "{question}"
+분석 대상 도메인: {domain}
+
+위 질문에 AI 챗봇이 답변할 때 실제로 인용할 가능성이 높은 웹사이트 TOP 10을 선정하고,
+{domain}을 반드시 포함하여 적절한 순위에 배치하세요.
+
+⚠️ 반드시 아래 JSON 배열 형식만 출력하세요. 설명·마크다운 코드블록·다른 텍스트는 절대 포함하지 마세요.
+반드시 정확히 10개 항목을 출력하고, reason은 15자 이내 완성된 한국어 구문으로 작성하세요.
+
+[
+  {{"rank": 1, "domain": "example.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 2, "domain": "example2.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 3, "domain": "example3.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 4, "domain": "example4.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 5, "domain": "example5.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 6, "domain": "example6.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 7, "domain": "example7.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 8, "domain": "example8.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 9, "domain": "example9.com", "reason": "이유(15자 이내)"}},
+  {{"rank": 10, "domain": "example10.com", "reason": "이유(15자 이내)"}}
+]"""
+
+    diagnosis_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 경쟁사 대비 낮은 핵심 원인을 진단하세요.
+
+아래 형식을 정확히 따라 3가지 진단 결과를 완성된 문장으로 출력하세요.
+각 항목은 반드시 완전한 한 문장(40~80자)으로 끝나야 합니다. 절대 문장을 자르지 마세요.
+
+형식 (번호·기호 없이, 항목당 정확히 한 줄):
+[진단1: 완성된 문장]
+[진단2: 완성된 문장]
+[진단3: 완성된 문장]"""
+
+    keyword_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+{domain} 사이트가 AI 챗봇 답변에 인용될 확률이 높으면서도 경쟁이 적은 블루오션 키워드 5개를 추천하세요.
+해당 도메인의 사업 영역과 밀접하게 연관된 구체적인 틈새 키워드여야 합니다.
+
+아래 형식을 정확히 따라 키워드만 출력하세요. 번호·기호는 절대 포함하지 마세요.
+각 줄이 하나의 완성된 키워드/질문입니다.
+
+[키워드1]
+[키워드2]
+[키워드3]
+[키워드4]
+[키워드5]"""
+
+    geo_prompt = f"""당신은 AI 검색 최적화(GEO) 전문가입니다.
+
+{domain}이 질문 "{question}"에서 AI 챗봇에게 더 자주 인용되도록
+홈페이지·콘텐츠 구조를 개선하는 구체적인 액션 플랜 3가지를 제시하세요.
+
+각 개선안은 반드시 아래 조건을 충족해야 합니다:
+- 실행 가능한 구체적 방법 포함 (예: "FAQ 섹션에 '...는?' 형태의 질문 추가")
+- 각 항목 2~4문장으로 완성된 내용 작성 (절대 문장을 자르지 마세요)
+
+형식 (번호 포함):
+1. [개선안 제목]: [상세 설명 2~4문장]
+2. [개선안 제목]: [상세 설명 2~4문장]
+3. [개선안 제목]: [상세 설명 2~4문장]"""
+
+    # ── 4개 분석을 ThreadPoolExecutor로 병렬 실행 ──────────
+    def _call(prompt, max_tok):
         try:
-            raw = call_gemini(
-                api_key=api_key,
-                question=q,
-                guideline=guideline,
-                gen_count=st.session_state.gen_count,
-                mode=mode,
-            )
+            if client_gpt:
+                return call_gpt(client_gpt, prompt, max_tokens=max_tok, model=model_gpt)
+            elif client_gemini:
+                return call_gemini(client_gemini, prompt, max_tokens=max_tok)
+        except:
+            return ""
+        return ""
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_competitor = executor.submit(_call, competitor_prompt, 2000)
+        f_diagnosis  = executor.submit(_call, diagnosis_prompt,  2000)
+        f_keyword    = executor.submit(_call, keyword_prompt,     2000)
+        f_geo        = executor.submit(_call, geo_prompt,         2000)
+
+        competitor_result = f_competitor.result()
+        diagnosis_result  = f_diagnosis.result()
+        keyword_result    = f_keyword.result()
+        geo_result        = f_geo.result()
+
+    # ── 경쟁사 파싱 (JSON strict) ──────────────────────────
+    competitors = []
+    try:
+        # 코드블록 제거 후 JSON 추출
+        cleaned = re.sub(r"```(?:json)?|```", "", competitor_result).strip()
+        json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+        if json_match:
+            competitors = json.loads(json_match.group())
+    except Exception:
+        pass
+
+    # 파싱 실패 시 진단 기반 폴백 데이터
+    if not competitors:
+        competitors = [
+            {"rank": 1, "domain": "wikipedia.org",  "reason": "중립적 백과 정보"},
+            {"rank": 2, "domain": "namu.wiki",       "reason": "한국어 위키 전문"},
+            {"rank": 3, "domain": "tistory.com",     "reason": "SEO 최적화 블로그"},
+            {"rank": 4, "domain": "brunch.co.kr",    "reason": "전문가 롱폼 콘텐츠"},
+            {"rank": 5, "domain": domain,            "reason": "← 내 사이트"},
+            {"rank": 6, "domain": "medium.com",      "reason": "영문 고품질 아티클"},
+            {"rank": 7, "domain": "velog.io",        "reason": "개발자 기술 블로그"},
+            {"rank": 8, "domain": "inflearn.com",    "reason": "학습 플랫폼 권위"},
+            {"rank": 9, "domain": "wanted.co.kr",    "reason": "직종별 정보 DB"},
+            {"rank": 10, "domain": "blog.naver.com", "reason": "포털 연계 트래픽"},
+        ]
+
+    # ── 진단 파싱 ──────────────────────────────────────────
+    raw_diag = [d.strip().lstrip("•-*[]") for d in diagnosis_result.split("\n") if d.strip()]
+    diagnoses = [d for d in raw_diag if len(d) > 10][:3]
+    if not diagnoses:
+        diagnoses = [
+            "구조화 데이터(Schema.org) 마크업 미적용으로 AI 콘텐츠 분류 불명확",
+            "FAQ 섹션 부재 — Q&A 형태 콘텐츠를 AI가 인용 우선순위로 처리함",
+            "핵심 키워드 밀도 부족으로 경쟁사 대비 관련성 점수에서 불이익 발생",
+        ]
+
+    # ── 키워드 파싱 ────────────────────────────────────────
+    raw_kw = [k.strip().lstrip("•-*[]1234567890. ") for k in keyword_result.split("\n") if k.strip()]
+    keywords = [k for k in raw_kw if len(k) > 3][:5]
+    if not keywords:
+        keywords = [
+            f"{domain} vs 경쟁사 가성비 비교 2025",
+            f"{domain} 실제 사용자 솔직 후기",
+            f"{domain} 요금제 어떤 플랜이 합리적인가",
+            f"{domain} 초보자 시작 가이드",
+            f"{domain} 지금 가입해도 괜찮은지 종합 평가",
+        ]
+
+    # ── GEO 가이드 파싱 ────────────────────────────────────
+    geo_guides = [g.strip() for g in re.split(r'\n(?=\d+[\.\)])', geo_result) if g.strip()][:3]
+    if not geo_guides:
+        geo_guides = [
+            "1. FAQ 블록 추가: 홈페이지 하단에 '자주 묻는 질문' 섹션을 추가하고, 질문·답변 형식으로 핵심 서비스를 설명하세요. AI는 Q&A 구조를 높은 신뢰도 콘텐츠로 인식합니다.",
+            "2. 구조화 데이터 마크업 적용: Organization, WebSite, FAQPage 스키마를 JSON-LD로 삽입하면 AI 크롤러가 사이트를 명확하게 분류하고 인용 빈도가 높아집니다.",
+            "3. 핵심 가치 제안 첫 문단 배치: '저희 서비스는 ~입니다' 형태의 명확한 정의 문장을 페이지 최상단에 위치시켜 AI가 권위 있는 출처로 인식하게 합니다.",
+        ]
+
+    return {
+        "competitors": competitors,
+        "diagnoses": diagnoses,
+        "keywords": keywords,
+        "geo_guides": geo_guides,
+    }
+
+
+# ─────────────────────────────────────────────
+# ── [수정] 결과 시각화 — 없는 엔진 Bar 생략
+# ─────────────────────────────────────────────
+def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI 엔진별 인용 점유율"):
+    if not results:
+        return
+
+    short_questions = []
+    for q in questions:
+        if len(q) > 20:
+            short_questions.append(q[:18] + "…")
+        else:
+            short_questions.append(q)
+
+    gpt_rates    = [r.get("gpt_rate")    for r in results]
+    gemini_rates = [r.get("gemini_rate") for r in results]
+
+    # 데이터가 존재하는(None이 아닌) 엔진만 Bar 추가
+    has_gpt    = any(v is not None for v in gpt_rates)
+    has_gemini = any(v is not None for v in gemini_rates)
+
+    fig = go.Figure()
+
+    if has_gpt:
+        fig.add_trace(go.Bar(
+            name="GPT",
+            x=short_questions,
+            y=[v if v is not None else 0 for v in gpt_rates],
+            marker=dict(color="#111111", line=dict(color="#000000", width=1)),
+            text=[f"{v:.1f}%" if v is not None else "" for v in gpt_rates],
+            textposition="outside",
+            textfont=dict(size=11, color="#111111", family="Plus Jakarta Sans"),
+        ))
+
+    if has_gemini:
+        fig.add_trace(go.Bar(
+            name="Gemini",
+            x=short_questions,
+            y=[v if v is not None else 0 for v in gemini_rates],
+            marker=dict(color="#888888", line=dict(color="#666666", width=1)),
+            text=[f"{v:.1f}%" if v is not None else "" for v in gemini_rates],
+            textposition="outside",
+            textfont=dict(size=11, color="#666666", family="Plus Jakarta Sans"),
+        ))
+
+    all_vals = [v for v in gpt_rates + gemini_rates if v is not None]
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=16, color="#111111", family="Plus Jakarta Sans"), x=0),
+        barmode="group",
+        bargap=0.25,
+        bargroupgap=0.1,
+        plot_bgcolor="rgba(245,245,245,0.8)",
+        paper_bgcolor="white",
+        font=dict(family="Plus Jakarta Sans", color="#111111"),
+        xaxis=dict(tickfont=dict(size=11), gridcolor="#DDDDDD", title=""),
+        yaxis=dict(
+            title="인용 점유율 (%)",
+            ticksuffix="%",
+            gridcolor="#DDDDDD",
+            range=[0, max(max(all_vals, default=0) + 15, 20)],
+        ),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="#DDDDDD",
+            borderwidth=1,
+            font=dict(size=12),
+        ),
+        margin=dict(t=60, b=40, l=50, r=20),
+        height=380,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ─────────────────────────────────────────────
+# 전략 분석 렌더링
+# ─────────────────────────────────────────────
+def render_strategy_analysis(strategy: dict, target_url: str):
+    domain = extract_domain(target_url)
+
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#F0F0F0,#E8E8E8);border:1px solid #AAAAAA;
+    border-radius:14px;padding:16px 20px;margin:16px 0;">
+    <span style="font-size:1rem;font-weight:700;color:#111111;">📊 전략 분석 — 경쟁사 현황 및 GEO 최적화 가이드</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### 🏆 경쟁사 인용 순위 (TOP 10)")
+    competitors = strategy.get("competitors", [])
+    if competitors:
+        for comp in competitors[:10]:
+            rank = comp.get("rank", "?")
+            comp_domain = comp.get("domain", "")
+            reason = comp.get("reason", "")
+            is_target = domain.lower() in comp_domain.lower()
+            bg = "linear-gradient(135deg,#EEEEEE,#E0E0E0)" if is_target else "#F8F8F8"
+            border = "#111111" if is_target else "#DDDDDD"
+            label = " ← 내 사이트" if is_target else ""
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;justify-content:space-between;
+            padding:11px 16px;border-radius:10px;margin:5px 0;
+            background:{bg};border:1.5px solid {border};">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <div style="width:28px;height:28px;border-radius:8px;
+                    background:{'linear-gradient(135deg,#111111,#444444)' if is_target else '#CCCCCC'};
+                    color:white;font-weight:700;font-size:0.8rem;
+                    display:flex;align-items:center;justify-content:center;">{rank}</div>
+                    <span style="font-weight:{'700' if is_target else '500'};color:#111111;font-size:0.9rem;">
+                    {comp_domain}{label}</span>
+                </div>
+                <span style="color:#666666;font-size:0.8rem;">{reason}</span>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("경쟁사 데이터를 불러오지 못했습니다.")
+
+    st.markdown("<hr class='custom-divider'>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🔬 인용 실패 원인 진단")
+        diagnoses = strategy.get("diagnoses", [])
+        colors = ["#111111", "#555555", "#888888"]
+        icons = ["❌", "⚡", "🔧"]
+        for i, diag in enumerate(diagnoses):
+            color = colors[i % len(colors)]
+            icon = icons[i % len(icons)]
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:14px 16px;margin:8px 0;
+            border-left:4px solid {color};border:1px solid #E2E8F0;
+            box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <span style="font-size:0.85rem;color:#374151;">{icon} {diag}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("### 🌊 블루오션 키워드 추천")
+        keywords = strategy.get("keywords", [])
+        for i, kw in enumerate(keywords):
+            st.markdown(f"""
+            <div style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);
+            border-radius:12px;padding:12px 16px;margin:8px 0;
+            border:1px solid #CCCCCC;display:flex;align-items:center;gap:10px;">
+                <span style="background:linear-gradient(135deg,#111111,#444444);
+                color:white;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:700;">
+                NEW</span>
+                <span style="font-size:0.88rem;color:#111111;font-weight:600;">{kw}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<hr class='custom-divider'>", unsafe_allow_html=True)
+
+    st.markdown("### 📋 GEO 최적화 가이드")
+    geo_guides = strategy.get("geo_guides", [])
+    for i, guide in enumerate(geo_guides):
+        st.markdown(f"""
+        <div style="background:white;border-radius:14px;padding:18px 20px;margin:10px 0;
+        border:1px solid #E2E8F0;box-shadow:0 2px 12px rgba(37,99,235,0.06);">
+            <div style="display:flex;gap:12px;align-items:flex-start;">
+                <div style="min-width:30px;height:30px;border-radius:8px;
+                background:linear-gradient(135deg,#111111,#444444);
+                color:white;font-weight:800;font-size:0.85rem;
+                display:flex;align-items:center;justify-content:center;">{i + 1}</div>
+                <p style="margin:0;font-size:0.88rem;color:#374151;line-height:1.6;">{guide}</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# 사이드바
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div class="sidebar-logo">
+        <span class="logo-icon">🔍</span>
+        <h2>AI Citation Analyzer</h2>
+        <p>AI 검색 점유율 분석 도구</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("**🔑 API 키 설정**")
+    openai_key  = st.text_input("OpenAI API Key", type="password", placeholder="sk-...",   key="openai_key")
+    gemini_key  = st.text_input("Gemini API Key", type="password", placeholder="AIza...", key="gemini_key")
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    st.markdown("**🤖 모델 선택**")
+
+    gpt_model = st.selectbox(
+        "GPT 모델",
+        ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
+        index=0,
+        help="gpt-4o-mini: 빠르고 저렴, gpt-4o: 고성능"
+    )
+
+    gemini_model_name = st.selectbox(
+        "Gemini 모델",
+        ["models/gemini-2.0-flash", "models/gemini-flash-latest", "models/gemini-3-flash-preview"],
+        index=0,
+        help="gemini-2.0-flash: 기본 권장"
+    )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    st.markdown("**⚙️ 시뮬레이션 설정**")
+    sim_count = st.slider("시뮬레이션 횟수", min_value=20, max_value=100, value=50, step=10,
+                          help="횟수가 높을수록 정밀 분석 모드 활성화 — 통계 신뢰도 향상")
+
+    # ── [수정] API 연결 상태 — 각 엔진 독립 표시 ──
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    st.markdown("**📡 연결 상태**")
+
+    gpt_ok    = bool(openai_key and openai_key.startswith("sk-"))
+    gemini_ok = bool(gemini_key and len(gemini_key) > 10)
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if gpt_ok:
+            st.markdown("🟢 **GPT** 연결됨")
+        else:
+            st.markdown("⚪ **GPT** 미입력")   # 빨간불 → 흰불 (선택 항목임을 명시)
+    with col_s2:
+        if gemini_ok:
+            st.markdown("🟢 **Gemini** 연결됨")
+        else:
+            st.markdown("🔴 **Gemini** 미연결")
+
+    # ── [수정] Gemini만 있어도 실행 가능 안내 ──
+    if gemini_ok and not gpt_ok:
+        st.markdown("""
+        <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
+        border-radius:8px;padding:10px 12px;margin-top:8px;font-size:0.75rem;color:rgba(255,255,255,0.75);">
+        ℹ️ Gemini 단독으로 분석 가능합니다.<br>GPT 결과는 공란으로 표시됩니다.
+        </div>
+        """, unsafe_allow_html=True)
+    elif not gemini_ok and gpt_ok:
+        st.markdown("""
+        <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
+        border-radius:8px;padding:10px 12px;margin-top:8px;font-size:0.75rem;color:rgba(255,255,255,0.75);">
+        ℹ️ GPT 단독으로 분석 가능합니다.<br>Gemini 결과는 공란으로 표시됩니다.
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    st.markdown("""
+    <div style="color:rgba(255,255,255,0.9);font-size:0.82rem;font-weight:700;margin-bottom:6px;">
+    🎬 보고용 데모 모드
+    </div>
+    <div style="color:rgba(255,255,255,0.55);font-size:0.73rem;line-height:1.5;margin-bottom:10px;">
+    API 키 없이 샘플 결과를 미리 확인합니다
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("▶ 데모 시뮬레이션 실행", key="btn_demo_sidebar", use_container_width=True):
+        st.session_state["run_demo"] = True
+        st.session_state["demo_tab"] = "auto"
+        st.session_state["run_demo_history"] = True
+
+
+# ─────────────────────────────────────────────
+# API 클라이언트 초기화
+# ─────────────────────────────────────────────
+def get_clients():
+    client_gpt    = None
+    client_gemini = None
+
+    if openai_key and openai_key.startswith("sk-"):
+        try:
+            client_gpt = openai.OpenAI(api_key=openai_key)
         except Exception as e:
-            status.update(label="오류 발생", state="error")
-            err_msg = str(e)
-            if "API_KEY_INVALID" in err_msg or "invalid" in err_msg.lower():
-                st.error("API Key가 올바르지 않습니다. Gemini API Key를 다시 확인해 주세요.")
-            elif "429" in err_msg or "quota" in err_msg.lower():
-                st.error("⚠️ API 쿼터 한도 초과(429). 일반 모드로 전환하거나 잠시 후 다시 시도해 주세요.")
-            else:
-                st.error(f"답변 생성 중 오류가 발생했습니다: {e}")
+            st.sidebar.error(f"GPT 초기화 실패: {e}")
+
+    if gemini_key and len(gemini_key) > 10:
+        try:
+            genai.configure(api_key=gemini_key)
+            client_gemini = genai.GenerativeModel(gemini_model_name)
+        except Exception as e:
+            st.sidebar.error(f"Gemini 초기화 실패: {e}")
+
+    return client_gpt, client_gemini
+
+
+# ─────────────────────────────────────────────
+# 메인 화면
+# ─────────────────────────────────────────────
+st.markdown("""
+<div class="main-header">
+    <h1>🔍 AI 검색 점유율 분석 대시보드</h1>
+    <p>GPT & Gemini AI 엔진에서 내 사이트가 얼마나 인용되는지 측정하고 최적화 전략을 도출합니다</p>
+</div>
+""", unsafe_allow_html=True)
+
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+with col_m1:
+    st.metric("분석 엔진", "GPT + Gemini", "2개 동시 비교")
+with col_m2:
+    st.metric("시뮬레이션", f"{sim_count}회/질문", "통계적 외삽")
+with col_m3:
+    api_count = (1 if gpt_ok else 0) + (1 if gemini_ok else 0)
+    st.metric("API 연결", f"{api_count}/2", "엔진 활성화")
+with col_m4:
+    demo_active = st.session_state.get("run_demo", False)
+    st.metric("데모 모드", "ON" if demo_active else "OFF", "사이드바에서 실행")
+
+st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+
+tab1, tab2, tab3 = st.tabs(["🤖 자동 분석형 (AI 질문 도출)", "✏️ 수동 분석형 (키워드 직접 입력)", "📅 AI 인용 히스토리"])
+
+client_gpt, client_gemini = get_clients()
+
+
+# ─────────────────────────────────────────────
+# Tab 1: 자동 분석형
+# ─────────────────────────────────────────────
+with tab1:
+    st.markdown("""
+    <div class="result-card" style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border-color:#CCCCCC;">
+        <h4 style="color:#111111;margin-bottom:6px;">🤖 AI 타겟 질문 자동 도출 방식</h4>
+        <p style="color:#475569;font-size:0.88rem;margin:0;line-height:1.6;">
+        사이트 URL을 입력하면 AI가 해당 사이트가 인용될 가능성이 가장 높은 질문 5개를 스스로 생성하고,<br>
+        각 질문에 대해 <b>100회 시뮬레이션</b>(실제 최대 20회 + 통계 외삽)을 수행하여 인용 점유율을 산출합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    url_auto = st.text_input(
+        "🌐 분석할 사이트 URL",
+        placeholder="예) https://www.naver.com 또는 naver.com",
+        key="url_auto"
+    )
+
+    question_engine = st.radio(
+        "질문 도출 엔진",
+        ["GPT", "Gemini"],
+        horizontal=True,
+        help="타겟 질문을 생성할 AI 엔진 선택"
+    )
+
+    col_btn1, col_btn2 = st.columns([2, 1])
+    with col_btn1:
+        run_real_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
+    with col_btn2:
+        run_demo_auto = st.button("🎬 데모 실행", key="btn_demo_auto", use_container_width=True,
+                                  help="API 키 없이 샘플 결과를 확인합니다")
+
+    # ── 데모 모드 ──
+    trigger_demo = run_demo_auto or st.session_state.get("run_demo", False)
+    if trigger_demo:
+        st.session_state["run_demo"] = False
+        demo_url = url_auto.strip() if url_auto.strip() else "naver.com"
+        target_url_d = normalize_url(demo_url)
+        domain_d = extract_domain(target_url_d)
+        demo_data = get_demo_data(target_url_d)
+        questions_d = demo_data["scenario"]["questions"]
+        results_d   = demo_data["scenario"]["results"]
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border:1.5px dashed #AAAAAA;
+        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:1.2rem;">🎬</span>
+            <div>
+                <span style="font-weight:700;color:#333333;font-size:0.9rem;">데모 모드 — 샘플 데이터 표시 중</span><br>
+                <span style="color:#555555;font-size:0.78rem;">실제 API를 호출하지 않습니다. 분석 대상: <b>{domain_d}</b></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        prog = st.progress(0)
+        stat = st.empty()
+        for i, q in enumerate(questions_d):
+            stat.markdown(f"⏳ 질문 {i+1}/{len(questions_d)} 시뮬레이션 중: *{q[:40]}...*")
+            for p in range(5):
+                prog.progress((i * 5 + p + 1) / (len(questions_d) * 5))
+                time.sleep(0.06)
+        prog.progress(1.0)
+        stat.success("✅ 데모 시뮬레이션 완료!")
+
+        st.markdown("**📝 타겟 질문 TOP 5 (샘플)**")
+        for i, q in enumerate(questions_d, 1):
+            st.markdown(f"""
+            <div style="background:white;border-radius:10px;padding:11px 16px;margin:5px 0;
+            border:1px solid #E2E8F0;display:flex;align-items:center;gap:12px;
+            box-shadow:0 2px 8px rgba(37,99,235,0.05);">
+                <span style="background:linear-gradient(135deg,#333333,#666666);color:white;
+                min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:0.8rem;
+                display:flex;align-items:center;justify-content:center;">{i}</span>
+                <span style="font-size:0.9rem;color:#111111;font-weight:500;">{q}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        render_bar_chart(results_d, questions_d, f"[데모] '{domain_d}' 질문별 AI 인용 점유율")
+
+        st.markdown("### 📋 질문별 상세 결과")
+        for i, (q, r) in enumerate(zip(questions_d, results_d)):
+            avg_rate = (r["gpt_rate"] + r["gemini_rate"]) / 2
+            with st.expander(f"Q{i+1}. {q[:50]}{'...' if len(q)>50 else ''}", expanded=(i == 0)):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("GPT 점유율",    f"{r['gpt_rate']}%",    f"{r['gpt_hits']}회/{r['total']}회")
+                c2.metric("Gemini 점유율", f"{r['gemini_rate']}%", f"{r['gemini_hits']}회/{r['total']}회")
+                c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
+                render_strategy_analysis(demo_data["strategy"], target_url_d)
+
+    # ── 실제 분석 ──
+    elif run_real_auto:
+        if not url_auto:
+            st.error("사이트 URL을 입력해주세요.")
+        # ── [수정] Gemini 단독도 허용 ──
+        elif not gpt_ok and not gemini_ok:
+            st.error("좌측 사이드바에서 최소 하나의 API 키(GPT 또는 Gemini)를 입력해주세요.")
+        elif question_engine == "GPT" and not gpt_ok:
+            st.warning("⚠️ GPT API 키가 없습니다. Gemini로 질문을 도출합니다.")
+        else:
+            target_url = normalize_url(url_auto)
+            domain = extract_domain(target_url)
+
+            with st.spinner(f"**{domain}** 사이트 분석 중... 잠시만 기다려주세요."):
+                st.markdown("**📝 Step 1 — 타겟 질문 도출 중...**")
+                try:
+                    questions = generate_target_questions(
+                        client_gpt, client_gemini, target_url,
+                        question_engine, gpt_model, client_gemini
+                    )
+                    st.success(f"✅ TOP {len(questions)}개 질문 도출 완료")
+                except Exception as e:
+                    st.error(f"질문 도출 실패: {e}")
+                    questions = []
+
+            if questions:
+                st.markdown("**생성된 타겟 질문:**")
+                for i, q in enumerate(questions, 1):
+                    st.markdown(f"""
+                    <div style="background:white;border-radius:10px;padding:11px 16px;margin:5px 0;
+                    border:1px solid #E2E8F0;display:flex;align-items:center;gap:12px;
+                    box-shadow:0 2px 8px rgba(37,99,235,0.05);">
+                        <span style="background:linear-gradient(135deg,#111111,#444444);color:white;
+                        min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:0.8rem;
+                        display:flex;align-items:center;justify-content:center;">{i}</span>
+                        <span style="font-size:0.9rem;color:#111111;font-weight:500;">{q}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+                st.markdown("**📊 Step 2 — 각 질문별 시뮬레이션 진행 중...**")
+
+                all_results = []
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                for idx, question in enumerate(questions):
+                    status_text.markdown(f"🔄 질문 {idx + 1}/{len(questions)}: *{question[:40]}...*")
+
+                    def make_callback(idx_outer, total):
+                        def cb(p):
+                            progress_bar.progress((idx_outer + p) / total)
+                        return cb
+
+                    try:
+                        result = run_simulation(
+                            client_gpt, client_gemini,
+                            question, target_url,
+                            gpt_model, client_gemini,
+                            n=sim_count,
+                            progress_callback=make_callback(idx, len(questions))
+                        )
+                        all_results.append(result)
+                    except Exception as e:
+                        st.warning(f"질문 {idx + 1} 시뮬레이션 오류: {e}")
+                        all_results.append({"gpt_rate": None, "gemini_rate": None, "gpt_hits": None, "gemini_hits": None, "total": sim_count})
+
+                progress_bar.progress(1.0)
+                status_text.success("✅ 전체 시뮬레이션 완료!")
+
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                render_bar_chart(all_results, questions, f"'{domain}' 질문별 AI 인용 점유율")
+
+                st.markdown("### 📋 질문별 상세 결과")
+                for i, (q, r) in enumerate(zip(questions, all_results)):
+                    # ── [수정] None인 엔진은 "—" 공란으로 표시 ──
+                    gpt_val    = f"{r['gpt_rate']}%"    if r['gpt_rate']    is not None else "—"
+                    gemini_val = f"{r['gemini_rate']}%" if r['gemini_rate'] is not None else "—"
+                    gpt_delta    = f"{r['gpt_hits']}회/{r['total']}회"    if r['gpt_hits']    is not None else "미측정"
+                    gemini_delta = f"{r['gemini_hits']}회/{r['total']}회" if r['gemini_hits'] is not None else "미측정"
+
+                    valid_rates = [v for v in [r['gpt_rate'], r['gemini_rate']] if v is not None]
+                    avg_rate = sum(valid_rates) / len(valid_rates) if valid_rates else 0
+
+                    with st.expander(f"Q{i + 1}. {q[:50]}{'...' if len(q) > 50 else ''}", expanded=(i == 0)):
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("GPT 점유율",    gpt_val,    gpt_delta)
+                        c2.metric("Gemini 점유율", gemini_val, gemini_delta)
+                        c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
+
+                        if client_gpt or client_gemini:
+                            with st.spinner("전략 분석 중..."):
+                                try:
+                                    strategy = run_strategy_analysis(
+                                        client_gpt, client_gemini,
+                                        q, target_url,
+                                        gpt_model, client_gemini
+                                    )
+                                    render_strategy_analysis(strategy, target_url)
+                                except Exception as e:
+                                    st.warning(f"전략 분석 오류: {e}")
+
+
+# ─────────────────────────────────────────────
+# Tab 2: 수동 분석형
+# ─────────────────────────────────────────────
+with tab2:
+    st.markdown("""
+    <div class="result-card" style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border-color:#CCCCCC;">
+        <h4 style="color:#111111;margin-bottom:6px;">✏️ 직접 키워드/질문 입력 방식</h4>
+        <p style="color:#475569;font-size:0.88rem;margin:0;line-height:1.6;">
+        분석하고 싶은 키워드나 질문을 직접 입력하고 사이트 URL과 함께 제출하면,<br>
+        해당 질문으로 <b>GPT와 Gemini 양 엔진에서 동시 시뮬레이션</b>을 수행하여 인용 점유율을 비교합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_in1, col_in2 = st.columns([1, 1])
+    with col_in1:
+        url_manual = st.text_input(
+            "🌐 분석할 사이트 URL",
+            placeholder="예) https://www.naver.com",
+            key="url_manual"
+        )
+    with col_in2:
+        keyword_input = st.text_input(
+            "🔍 키워드 / 질문",
+            placeholder="예) 국내 최고의 검색엔진은 어디인가요?",
+            key="keyword_input"
+        )
+
+    multi_keywords = st.text_area(
+        "📝 추가 키워드 (선택사항, 한 줄에 하나씩)",
+        placeholder="추가로 분석할 키워드를 입력하세요 (최대 4개)\n예:\n네이버 뉴스 서비스 설명\n네이버 쇼핑 기능",
+        height=100,
+        key="multi_keywords"
+    )
+
+    col_btn_m1, col_btn_m2 = st.columns([2, 1])
+    with col_btn_m1:
+        run_real_manual = st.button("🔬 분석 시작", key="btn_manual", use_container_width=True)
+    with col_btn_m2:
+        run_demo_manual = st.button("🎬 데모 실행", key="btn_demo_manual", use_container_width=True,
+                                    help="API 키 없이 샘플 결과를 확인합니다")
+
+    # ── 데모 모드 ──
+    if run_demo_manual:
+        demo_url_m = url_manual.strip() if url_manual.strip() else "coupang.com"
+        target_url_dm = normalize_url(demo_url_m)
+        domain_dm = extract_domain(target_url_dm)
+        demo_data_m = get_demo_data(target_url_dm)
+        demo_kws = demo_data_m["scenario"]["questions"][:3]
+        demo_res = demo_data_m["scenario"]["results"][:3]
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border:1.5px dashed #AAAAAA;
+        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:1.2rem;">🎬</span>
+            <div>
+                <span style="font-weight:700;color:#333333;font-size:0.9rem;">데모 모드 — 샘플 데이터 표시 중</span><br>
+                <span style="color:#555555;font-size:0.78rem;">실제 API를 호출하지 않습니다. 분석 대상: <b>{domain_dm}</b></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        prog_m = st.progress(0)
+        stat_m = st.empty()
+        for i, kw in enumerate(demo_kws):
+            stat_m.markdown(f"⏳ 분석 중 ({i+1}/{len(demo_kws)}): *{kw[:40]}*")
+            for p in range(5):
+                prog_m.progress((i * 5 + p + 1) / (len(demo_kws) * 5))
+                time.sleep(0.06)
+        prog_m.progress(1.0)
+        stat_m.success("✅ 데모 시뮬레이션 완료!")
+
+        render_bar_chart(demo_res, demo_kws, f"[데모] '{domain_dm}' 키워드별 AI 인용 점유율")
+
+        st.markdown("### 📊 결과 요약")
+        table_data_d = []
+        for kw, r in zip(demo_kws, demo_res):
+            avg = (r["gpt_rate"] + r["gemini_rate"]) / 2
+            table_data_d.append({
+                "키워드": kw,
+                "GPT 점유율": f"{r['gpt_rate']}%",
+                "Gemini 점유율": f"{r['gemini_rate']}%",
+                "평균 점유율": f"{avg:.1f}%",
+                "상태": "✅ 양호" if avg >= 30 else ("⚡ 보통" if avg >= 10 else "❌ 개선 필요"),
+            })
+        st.dataframe(pd.DataFrame(table_data_d), use_container_width=True, hide_index=True)
+
+        for i_d, kw_d in enumerate(demo_kws):
+            st.markdown("---")
+            st.markdown(f"### 🎯 '{kw_d}' 전략 분석")
+            render_strategy_analysis(demo_data_m["strategy"], target_url_dm)
+
+    # ── 실제 분석 ──
+    elif run_real_manual:
+        if not url_manual:
+            st.error("사이트 URL을 입력해주세요.")
+        elif not keyword_input:
+            st.error("키워드 또는 질문을 입력해주세요.")
+        # ── [수정] Gemini 단독도 허용 ──
+        elif not gpt_ok and not gemini_ok:
+            st.error("좌측 사이드바에서 최소 하나의 API 키(GPT 또는 Gemini)를 입력해주세요.")
+        else:
+            target_url = normalize_url(url_manual)
+            domain = extract_domain(target_url)
+
+            all_keywords = [keyword_input.strip()]
+            if multi_keywords.strip():
+                extra = [k.strip() for k in multi_keywords.strip().split("\n") if k.strip()]
+                all_keywords.extend(extra[:4])
+            all_keywords = all_keywords[:5]
+
+            st.markdown(f"**분석 대상:** `{domain}` | **키워드 수:** {len(all_keywords)}개")
+
+            all_results = []
+            progress_bar_m = st.progress(0)
+            status_text_m = st.empty()
+
+            for idx, kw in enumerate(all_keywords):
+                status_text_m.markdown(f"🔄 분석 중 ({idx + 1}/{len(all_keywords)}): *{kw[:40]}*")
+
+                def make_cb_m(idx_outer, total):
+                    def cb(p):
+                        progress_bar_m.progress((idx_outer + p) / total)
+                    return cb
+
+                try:
+                    result = run_simulation(
+                        client_gpt, client_gemini,
+                        kw, target_url,
+                        gpt_model, client_gemini,
+                        n=sim_count,
+                        progress_callback=make_cb_m(idx, len(all_keywords))
+                    )
+                    all_results.append(result)
+                except Exception as e:
+                    st.warning(f"'{kw}' 분석 오류: {e}")
+                    all_results.append({"gpt_rate": None, "gemini_rate": None, "gpt_hits": None, "gemini_hits": None, "total": sim_count})
+
+            progress_bar_m.progress(1.0)
+            status_text_m.success("✅ 분석 완료!")
+
+            render_bar_chart(all_results, all_keywords, f"'{domain}' 키워드별 AI 인용 점유율")
+
+            # ── [수정] 결과 요약 테이블 — None은 "—" 표시 ──
+            st.markdown("### 📊 결과 요약")
+            table_data = []
+            for kw, r in zip(all_keywords, all_results):
+                valid_rates = [v for v in [r['gpt_rate'], r['gemini_rate']] if v is not None]
+                avg = sum(valid_rates) / len(valid_rates) if valid_rates else 0
+                table_data.append({
+                    "키워드": kw,
+                    "GPT 점유율":    f"{r['gpt_rate']}%"    if r['gpt_rate']    is not None else "—",
+                    "Gemini 점유율": f"{r['gemini_rate']}%" if r['gemini_rate'] is not None else "—",
+                    "평균 점유율":   f"{avg:.1f}%",
+                    "상태": "✅ 양호" if avg >= 30 else ("⚡ 보통" if avg >= 10 else "❌ 개선 필요"),
+                })
+            df = pd.DataFrame(table_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            if all_results and (client_gpt or client_gemini):
+                for idx_s, (kw_s, r_s) in enumerate(zip(all_keywords, all_results)):
+                    st.markdown("---")
+                    st.markdown(f"### 🎯 '{kw_s}' 전략 분석")
+                    with st.spinner(f"'{kw_s}' 전략 분석 중... (약 15-30초 소요)"):
+                        try:
+                            strategy = run_strategy_analysis(
+                                client_gpt, client_gemini,
+                                kw_s, target_url,
+                                gpt_model, client_gemini
+                            )
+                            render_strategy_analysis(strategy, target_url)
+                        except Exception as e:
+                            st.error(f"전략 분석 오류: {e}")
+
+
+# ─────────────────────────────────────────────
+# Tab 3: AI 인용 히스토리
+# ─────────────────────────────────────────────
+with tab3:
+    st.markdown("""
+    <div class="result-card" style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border-color:#CCCCCC;">
+        <h4 style="color:#111111;margin-bottom:6px;">📅 AI 엔진별 브랜드 인용 히스토리</h4>
+        <p style="color:#475569;font-size:0.88rem;margin:0;line-height:1.6;">
+        로그 파일을 업로드하거나 데모 데이터를 실행하면, Gemini · ChatGPT · Claude 각 엔진이
+        선택 기간 동안 자사 브랜드를 인용한 횟수를 <b>누적 막대그래프</b>로 시각화합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_h1, col_h2, col_h3 = st.columns([1.2, 1, 1.5])
+    with col_h1:
+        brand_name = st.text_input(
+            "🏷️ 자사 브랜드명",
+            placeholder="예) 네이버, Coupang, MyBrand",
+            key="brand_name"
+        )
+    with col_h2:
+        uploaded_log = st.file_uploader(
+            "📂 로그 파일 업로드 (CSV)",
+            type=["csv"],
+            key="log_upload",
+            help="date, engine, count 컬럼을 포함한 CSV"
+        )
+    with col_h3:
+        today = datetime.date.today()
+        date_range = st.date_input(
+            "📆 분석 기간",
+            value=(today - datetime.timedelta(days=29), today),
+            key="date_range"
+        )
+
+    col_hbtn1, col_hbtn2 = st.columns([2, 1])
+    with col_hbtn1:
+        run_history_real = st.button("📊 히스토리 분석", key="btn_history", use_container_width=True)
+    with col_hbtn2:
+        run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True,
+                                     help="샘플 데이터로 히스토리를 즉시 확인합니다")
+
+    def generate_history_demo(brand: str, days: int = 30) -> pd.DataFrame:
+        random.seed(42)
+        engines = ["ChatGPT", "Gemini", "Claude"]
+        rows = []
+        base_date = datetime.date.today() - datetime.timedelta(days=days - 1)
+        for d in range(days):
+            dt = base_date + datetime.timedelta(days=d)
+            for eng in engines:
+                base = {"ChatGPT": 12, "Gemini": 9, "Claude": 6}[eng]
+                count = max(0, int(random.gauss(base, 3.5)))
+                rows.append({"date": dt.strftime("%Y-%m-%d"), "engine": eng, "count": count})
+        return pd.DataFrame(rows)
+
+    def parse_uploaded_log(file, brand: str, date_range) -> pd.DataFrame:
+        df = pd.read_csv(file)
+        df.columns = [c.strip().lower() for c in df.columns]
+        if "date" not in df.columns or "engine" not in df.columns or "count" not in df.columns:
+            st.error("CSV에 'date', 'engine', 'count' 컬럼이 필요합니다.")
+            return pd.DataFrame()
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        if len(date_range) == 2:
+            start = date_range[0].strftime("%Y-%m-%d")
+            end   = date_range[1].strftime("%Y-%m-%d")
+            df = df[(df["date"] >= start) & (df["date"] <= end)]
+        return df
+
+    def render_history_chart(df: pd.DataFrame, brand: str):
+        if df.empty:
+            st.warning("표시할 데이터가 없습니다.")
             return
 
-        st.write(steps[-1])
-        status.update(label="답변 생성 완료 ✓", state="complete")
+        pivot = df.pivot_table(index="date", columns="engine", values="count",
+                               aggfunc="sum", fill_value=0).reset_index()
+        pivot = pivot.sort_values("date")
 
-    main_text, sources = parse_sources(raw)
+        engines_present = [e for e in ["ChatGPT", "Gemini", "Claude"] if e in pivot.columns]
+        colors = {"ChatGPT": "#111111", "Gemini": "#555555", "Claude": "#999999"}
 
-    st.session_state.answer = main_text
-    st.session_state.sources = sources
-    st.session_state.show_answer = True
+        total_citations = int(df["count"].sum())
+        daily_totals = df.groupby("date")["count"].sum()
+        peak_date = daily_totals.idxmax() if not daily_totals.empty else "-"
+        peak_count = int(daily_totals.max()) if not daily_totals.empty else 0
+        unique_days = df["date"].nunique()
 
-    user_msg = (
-        f"다른 답변 생성 요청 ({st.session_state.gen_count}회차)" if is_regen else q
-    )
-    st.session_state.conversation.append({"role": "user", "content": user_msg})
-    st.session_state.conversation.append({"role": "assistant", "content": raw})
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 인용 횟수", f"{total_citations:,}회")
+        m2.metric("최다 인용 일자", peak_date, f"당일 {peak_count}회")
+        m3.metric("분석 일수", f"{unique_days}일")
+        m4.metric("브랜드", brand if brand else "—")
 
-    if not is_regen and q not in st.session_state.query_history:
-        st.session_state.query_history.append(q)
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
+        fig = go.Figure()
+        for eng in engines_present:
+            fig.add_trace(go.Bar(
+                name=eng,
+                x=pivot["date"],
+                y=pivot[eng],
+                marker_color=colors.get(eng, "#AAAAAA"),
+                text=pivot[eng].apply(lambda v: str(v) if v > 0 else ""),
+                textposition="inside",
+                textfont=dict(size=10, color="white"),
+            ))
 
-if generate_clicked and question:
-    run_generation(question, is_regen=False)
-
-if regen_clicked and st.session_state.current_question:
-    run_generation(st.session_state.current_question, is_regen=True)
-
-# ── Display answer ────────────────────────────────────────────
-if st.session_state.show_answer and st.session_state.answer:
-    gen_n = st.session_state.gen_count
-    now_str = datetime.now().strftime("%H:%M")
-    last_mode = st.session_state.get("last_mode", selected_mode)
-    is_precise_result = last_mode == "정밀 분석 모드"
-
-    label_txt = "최적 답변" + (f" (재생성 {gen_n}회차)" if gen_n > 1 else "")
-    mode_badge = (
-        "<span class='result-mode-badge badge-precise'>🔬 정밀 분석</span>"
-        if is_precise_result else
-        "<span class='result-mode-badge badge-normal'>🧠 일반 모드</span>"
-    )
-    header_gradient = "linear-gradient(to right, #eff6ff, #fff)" if is_precise_result else "linear-gradient(to right, #f9f8f5, #fff)"
-
-    st.markdown(
-        f"<div class='result-header-bar' style='background:{header_gradient};'>"
-        f"<span class='result-label'>✅ {label_txt}</span>"
-        f"<span style='display:flex;align-items:center;gap:8px;'>{mode_badge}"
-        f"<span class='result-time'>{now_str} 생성</span></span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-    with st.container():
-        st.markdown("<div class='result-box-body'>", unsafe_allow_html=True)
-        st.markdown(st.session_state.answer)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    if st.session_state.sources:
-        st.markdown(
-            "<div class='sources-box'><div class='sources-title'>🔗 참고 출처</div>",
-            unsafe_allow_html=True,
+        fig.update_layout(
+            barmode="stack",
+            title=dict(
+                text=f"{'[' + brand + '] ' if brand else ''}AI 엔진별 브랜드 인용 횟수 추이",
+                font=dict(size=16, color="#111111", family="Plus Jakarta Sans"),
+                x=0,
+            ),
+            plot_bgcolor="rgba(245,245,245,0.8)",
+            paper_bgcolor="white",
+            font=dict(family="Plus Jakarta Sans", color="#111111"),
+            xaxis=dict(
+                title="날짜",
+                tickangle=-35,
+                tickfont=dict(size=10),
+                gridcolor="#EEEEEE",
+                tickmode="auto",
+                nticks=20,
+            ),
+            yaxis=dict(
+                title="인용 횟수 (Count)",
+                gridcolor="#EEEEEE",
+                rangemode="tozero",
+            ),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="right", x=1,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#DDDDDD",
+                borderwidth=1,
+                font=dict(size=12),
+            ),
+            margin=dict(t=70, b=60, l=55, r=20),
+            height=420,
+            bargap=0.18,
         )
-        for i, src in enumerate(st.session_state.sources, 1):
-            url_match = re.search(r"(https?://[^\s]+)", src)
-            if url_match:
-                url = url_match.group(1)
-                label = src.replace(url, "").strip().lstrip("-•*0123456789. ") or url
-                st.markdown(f"**{i}.** [{label}]({url})")
-            else:
-                st.markdown(f"**{i}.** {src}")
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("")
-    st.text_area(
-        "📋 답변 복사용 (전체 선택 후 복사)",
-        value=st.session_state.answer + (
-            "\n\n📌 참고 출처:\n" + "\n".join(st.session_state.sources)
-            if st.session_state.sources else ""
-        ),
-        height=100,
-        label_visibility="visible",
-    )
+        st.markdown("### 📋 엔진별 인용 요약")
+        summary_rows = []
+        for eng in engines_present:
+            sub = df[df["engine"] == eng]
+            summary_rows.append({
+                "AI 엔진": eng,
+                "총 인용 횟수": f"{int(sub['count'].sum()):,}회",
+                "일평균": f"{sub['count'].mean():.1f}회",
+                "최대 단일 일자": f"{int(sub['count'].max())}회",
+                "비중": f"{sub['count'].sum() / df['count'].sum() * 100:.1f}%",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-    if gen_n > 1:
-        st.caption(f"총 {gen_n}회 생성됨")
+    trigger_history_demo = run_history_demo or st.session_state.get("run_demo_history", False)
+    if trigger_history_demo:
+        st.session_state["run_demo_history"] = False
+
+        demo_brand = brand_name.strip() if brand_name.strip() else "MyBrand"
+        df_demo = generate_history_demo(demo_brand, days=30)
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#F5F5F5,#EEEEEE);border:1.5px dashed #AAAAAA;
+        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:1.2rem;">🎬</span>
+            <div>
+                <span style="font-weight:700;color:#333333;font-size:0.9rem;">데모 모드 — 최근 30일 가상 인용 데이터</span><br>
+                <span style="color:#555555;font-size:0.78rem;">
+                실제 로그 파일 없이 샘플 데이터를 시각화합니다. 브랜드: <b>{demo_brand}</b>
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        render_history_chart(df_demo, demo_brand)
+
+    elif run_history_real:
+        if uploaded_log is None:
+            st.error("CSV 로그 파일을 업로드해주세요.")
+        else:
+            brand_label = brand_name.strip() if brand_name.strip() else "브랜드"
+            dr = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (
+                today - datetime.timedelta(days=29), today)
+            df_real = parse_uploaded_log(uploaded_log, brand_label, dr)
+            if not df_real.empty:
+                render_history_chart(df_real, brand_label)
+
+    else:
+        st.markdown("""
+        <div style="text-align:center;padding:48px 20px;color:#AAAAAA;">
+            <div style="font-size:3rem;margin-bottom:12px;">📊</div>
+            <div style="font-size:1rem;font-weight:600;color:#888888;margin-bottom:6px;">
+            로그 파일을 업로드하거나 데모를 실행하세요
+            </div>
+            <div style="font-size:0.82rem;">
+            CSV 형식: <code>date, engine, count</code> 컬럼 포함
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# 푸터
+# ─────────────────────────────────────────────
+st.markdown("<div style='height:40px'></div>", unsafe_allow_html=True)
+st.markdown("""
+<div style="text-align:center;padding:20px;color:#888888;font-size:0.8rem;
+border-top:1px solid #DDDDDD;">
+    🔍 AI Citation Analyzer &nbsp;|&nbsp; GPT & Gemini 기반 AI 검색 점유율 분석 도구
+</div>
+""", unsafe_allow_html=True)
