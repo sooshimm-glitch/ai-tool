@@ -58,12 +58,10 @@ html, body, [class*="css"] {
     background-color: var(--bg) !important;
 }
 
-/* 메인 배경 */
 .stApp {
     background: #F5F5F5 !important;
 }
 
-/* 헤더 */
 .main-header {
     background: linear-gradient(135deg, #111111 0%, #333333 60%, #555555 100%);
     border-radius: 20px;
@@ -105,7 +103,6 @@ html, body, [class*="css"] {
     font-weight: 400;
 }
 
-/* 카드 */
 .metric-card {
     background: white;
     border-radius: 16px;
@@ -116,7 +113,6 @@ html, body, [class*="css"] {
 }
 .metric-card:hover { box-shadow: var(--shadow-hover); }
 
-/* 탭 스타일 */
 .stTabs [data-baseweb="tab-list"] {
     background: white !important;
     border-radius: 14px !important;
@@ -138,7 +134,6 @@ html, body, [class*="css"] {
     box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
 }
 
-/* 입력 필드 */
 .stTextInput > div > div > input,
 .stTextArea > div > div > textarea {
     border-radius: 12px !important;
@@ -155,7 +150,6 @@ html, body, [class*="css"] {
     box-shadow: 0 0 0 3px rgba(0,0,0,0.10) !important;
 }
 
-/* 버튼 */
 .stButton > button {
     background: linear-gradient(135deg, #111111, #444444) !important;
     color: white !important;
@@ -173,7 +167,6 @@ html, body, [class*="css"] {
     box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
 }
 
-/* 사이드바 */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #111111 0%, #222222 50%, #333333 100%) !important;
 }
@@ -197,13 +190,11 @@ html, body, [class*="css"] {
     font-weight: 500 !important;
 }
 
-/* Progress bar */
 .stProgress > div > div > div {
     background: linear-gradient(90deg, #111111, #555555) !important;
     border-radius: 8px !important;
 }
 
-/* 경고/성공 메시지 */
 .stSuccess {
     background: rgba(16,185,129,0.08) !important;
     border: 1px solid rgba(16,185,129,0.3) !important;
@@ -220,7 +211,6 @@ html, body, [class*="css"] {
     border-radius: 12px !important;
 }
 
-/* 결과 카드 */
 .result-card {
     background: white;
     border-radius: 16px;
@@ -236,7 +226,6 @@ html, body, [class*="css"] {
     margin-bottom: 8px;
 }
 
-/* 점유율 배지 */
 .share-badge-high {
     display: inline-block;
     background: linear-gradient(135deg, #10B981, #059669);
@@ -265,7 +254,6 @@ html, body, [class*="css"] {
     font-weight: 700;
 }
 
-/* 사이드바 로고 */
 .sidebar-logo {
     text-align: center;
     padding: 20px 0 24px 0;
@@ -290,7 +278,6 @@ html, body, [class*="css"] {
     margin: 4px 0 0 0 !important;
 }
 
-/* 섹션 헤더 */
 .section-header {
     display: flex;
     align-items: center;
@@ -311,7 +298,6 @@ html, body, [class*="css"] {
     margin: 0;
 }
 
-/* Divider */
 .custom-divider {
     border: none;
     height: 1px;
@@ -319,7 +305,6 @@ html, body, [class*="css"] {
     margin: 24px 0;
 }
 
-/* 분석 중 상태 */
 .analyzing-banner {
     background: linear-gradient(135deg, #F5F5F5, #EEEEEE);
     border: 1px solid #CCCCCC;
@@ -331,7 +316,6 @@ html, body, [class*="css"] {
     margin: 12px 0;
 }
 
-/* 경쟁사 순위 테이블 */
 .competitor-row {
     display: flex;
     align-items: center;
@@ -477,18 +461,15 @@ DEMO_STRATEGY = {
 
 
 def get_demo_data(url: str) -> dict:
-    """URL에 따라 미리 준비된 데모 데이터를 반환"""
     domain = extract_domain(url).lower()
     for key in DEMO_SCENARIOS:
         if key != "default" and key in domain:
             scenario = DEMO_SCENARIOS[key].copy()
             strategy = DEMO_STRATEGY.copy()
-            # 내 사이트 도메인으로 경쟁사 데이터 업데이트
             for comp in strategy["competitors"]:
                 if "target-site" in comp["domain"]:
                     comp["domain"] = domain
             return {"scenario": scenario, "strategy": strategy}
-    # 기본 데모
     scenario = DEMO_SCENARIOS["default"].copy()
     strategy = DEMO_STRATEGY.copy()
     for comp in strategy["competitors"]:
@@ -551,10 +532,17 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, 
 
 5개 질문만 출력:"""
 
-    if engine == "GPT":
+    # ── [수정] 엔진 선택 시 해당 엔진 없으면 가용 엔진으로 자동 폴백 ──
+    if engine == "GPT" and client_gpt:
+        result = call_gpt(client_gpt, prompt, max_tokens=300, model=model_gpt)
+    elif engine == "Gemini" and client_gemini:
+        result = call_gemini(client_gemini, prompt, max_tokens=300)
+    elif client_gemini:
+        result = call_gemini(client_gemini, prompt, max_tokens=300)
+    elif client_gpt:
         result = call_gpt(client_gpt, prompt, max_tokens=300, model=model_gpt)
     else:
-        result = call_gemini(client_gemini, prompt, max_tokens=300)
+        raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
 
     questions = [q.strip().lstrip("•-*1234567890. ") for q in result.split("\n") if q.strip()]
     questions = [q for q in questions if len(q) > 5][:5]
@@ -607,30 +595,32 @@ def simulate_single_gemini(model_obj, question: str, target_url: str) -> bool:
 
 
 # ─────────────────────────────────────────────
-# 점유율 계산 (N회 시뮬레이션)
+# ── [수정] 점유율 계산 — GPT/Gemini 독립 처리
+#    없는 엔진은 None 반환 (공란 표시용)
 # ─────────────────────────────────────────────
 def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
                    model_gpt: str, model_gemini, n: int = 100,
                    progress_callback=None) -> dict:
-    gpt_hits = 0
-    gemini_hits = 0
 
-    # 비용 절약을 위해 실제 API 호출은 20회, 나머지는 통계적 외삽
     actual_n = min(n, 20)
     sample_gpt = 0
     sample_gemini = 0
+    gpt_ran = False
+    gemini_ran = False
 
     for i in range(actual_n):
         if client_gpt:
             try:
                 if simulate_single_gpt(client_gpt, question, target_url, model_gpt):
                     sample_gpt += 1
+                gpt_ran = True
             except:
                 pass
         if client_gemini:
             try:
                 if simulate_single_gemini(client_gemini, question, target_url):
                     sample_gemini += 1
+                gemini_ran = True
             except:
                 pass
 
@@ -638,32 +628,28 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
             progress_callback((i + 1) / actual_n)
         time.sleep(0.05)
 
-    # 외삽
-    gpt_rate = (sample_gpt / actual_n * 100) if actual_n > 0 else 0
-    gemini_rate = (sample_gemini / actual_n * 100) if actual_n > 0 else 0
-
-    # 약간의 현실적 노이즈 추가
     noise = lambda r: max(0, min(100, r + random.gauss(0, 2.5)))
-    gpt_rate = noise(gpt_rate)
-    gemini_rate = noise(gemini_rate)
+
+    # 실행된 엔진만 결과 계산, 미실행 엔진은 None
+    gpt_rate    = noise(sample_gpt    / actual_n * 100) if gpt_ran    else None
+    gemini_rate = noise(sample_gemini / actual_n * 100) if gemini_ran else None
 
     return {
-        "gpt_rate": round(gpt_rate, 1),
-        "gemini_rate": round(gemini_rate, 1),
-        "gpt_hits": round(n * gpt_rate / 100),
-        "gemini_hits": round(n * gemini_rate / 100),
+        "gpt_rate":    round(gpt_rate, 1)    if gpt_rate    is not None else None,
+        "gemini_rate": round(gemini_rate, 1) if gemini_rate is not None else None,
+        "gpt_hits":    round(n * gpt_rate    / 100) if gpt_rate    is not None else None,
+        "gemini_hits": round(n * gemini_rate / 100) if gemini_rate is not None else None,
         "total": n,
     }
 
 
 # ─────────────────────────────────────────────
-# 전략 분석 (경쟁사 순위 / GEO 가이드 / 키워드 추천)
+# 전략 분석
 # ─────────────────────────────────────────────
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini) -> dict:
     domain = extract_domain(target_url)
 
-    # 1. 경쟁사 파악
     competitor_prompt = f"""질문: "{question}"
 
 이 질문에 답변할 때 AI가 자주 인용할 것으로 예상되는 상위 10개 웹사이트 도메인을 인용 가능성 높은 순으로 나열하세요.
@@ -695,7 +681,6 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
             for i in range(5)
         ]
 
-    # 2. 인용 실패 원인 진단
     diagnosis_prompt = f"""웹사이트 {domain}이 질문 "{question}"에서 AI 인용 점유율이 낮은 이유를 분석하세요.
 
 경쟁사 대비 콘텐츠 구조 문제점 3가지를 구체적으로 진단하세요. 각 항목은 한 줄 (50자 이내).
@@ -713,7 +698,6 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
     diagnoses = [d.strip().lstrip("•-*") for d in diagnosis_result.split("\n") if d.strip()][:3]
 
-    # 3. 블루오션 키워드
     keyword_prompt = f"""{domain} 사이트에서 현재 AI 인용 확률이 높을 것으로 예상되는 블루오션 키워드/질문 5개를 추천하세요.
 경쟁이 적고 해당 사이트의 전문성이 높은 틈새 키워드 위주로.
 
@@ -730,7 +714,6 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
     keywords = [k.strip().lstrip("•-*1234567890. ") for k in keyword_result.split("\n") if k.strip()][:5]
 
-    # 4. GEO 가이드
     geo_prompt = f"""{domain}이 질문 "{question}"에서 AI에게 더 잘 인용되도록 홈페이지 개선 방안 3가지를 제시하세요.
 구체적인 문구 수정 또는 구조 변경 제안 포함. 각 항목 2줄 이내.
 
@@ -756,7 +739,7 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
 
 # ─────────────────────────────────────────────
-# 결과 시각화
+# ── [수정] 결과 시각화 — 없는 엔진 Bar 생략
 # ─────────────────────────────────────────────
 def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI 엔진별 인용 점유율"):
     if not results:
@@ -769,36 +752,38 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI
         else:
             short_questions.append(q)
 
-    gpt_rates = [r.get("gpt_rate", 0) for r in results]
-    gemini_rates = [r.get("gemini_rate", 0) for r in results]
+    gpt_rates    = [r.get("gpt_rate")    for r in results]
+    gemini_rates = [r.get("gemini_rate") for r in results]
+
+    # 데이터가 존재하는(None이 아닌) 엔진만 Bar 추가
+    has_gpt    = any(v is not None for v in gpt_rates)
+    has_gemini = any(v is not None for v in gemini_rates)
 
     fig = go.Figure()
 
-    fig.add_trace(go.Bar(
-        name="GPT",
-        x=short_questions,
-        y=gpt_rates,
-        marker=dict(
-            color="#111111",
-            line=dict(color="#000000", width=1),
-        ),
-        text=[f"{v:.1f}%" for v in gpt_rates],
-        textposition="outside",
-        textfont=dict(size=11, color="#111111", family="Plus Jakarta Sans"),
-    ))
+    if has_gpt:
+        fig.add_trace(go.Bar(
+            name="GPT",
+            x=short_questions,
+            y=[v if v is not None else 0 for v in gpt_rates],
+            marker=dict(color="#111111", line=dict(color="#000000", width=1)),
+            text=[f"{v:.1f}%" if v is not None else "" for v in gpt_rates],
+            textposition="outside",
+            textfont=dict(size=11, color="#111111", family="Plus Jakarta Sans"),
+        ))
 
-    fig.add_trace(go.Bar(
-        name="Gemini",
-        x=short_questions,
-        y=gemini_rates,
-        marker=dict(
-            color="#888888",
-            line=dict(color="#666666", width=1),
-        ),
-        text=[f"{v:.1f}%" for v in gemini_rates],
-        textposition="outside",
-        textfont=dict(size=11, color="#666666", family="Plus Jakarta Sans"),
-    ))
+    if has_gemini:
+        fig.add_trace(go.Bar(
+            name="Gemini",
+            x=short_questions,
+            y=[v if v is not None else 0 for v in gemini_rates],
+            marker=dict(color="#888888", line=dict(color="#666666", width=1)),
+            text=[f"{v:.1f}%" if v is not None else "" for v in gemini_rates],
+            textposition="outside",
+            textfont=dict(size=11, color="#666666", family="Plus Jakarta Sans"),
+        ))
+
+    all_vals = [v for v in gpt_rates + gemini_rates if v is not None]
 
     fig.update_layout(
         title=dict(text=title, font=dict(size=16, color="#111111", family="Plus Jakarta Sans"), x=0),
@@ -813,7 +798,7 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI
             title="인용 점유율 (%)",
             ticksuffix="%",
             gridcolor="#DDDDDD",
-            range=[0, max(max(gpt_rates + gemini_rates, default=0) + 15, 20)],
+            range=[0, max(max(all_vals, default=0) + 15, 20)],
         ),
         legend=dict(
             orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
@@ -842,7 +827,6 @@ def render_strategy_analysis(strategy: dict, target_url: str):
     </div>
     """, unsafe_allow_html=True)
 
-    # 경쟁사 순위
     st.markdown("### 🏆 경쟁사 인용 순위 (TOP 10)")
     competitors = strategy.get("competitors", [])
     if competitors:
@@ -874,7 +858,6 @@ def render_strategy_analysis(strategy: dict, target_url: str):
 
     st.markdown("<hr class='custom-divider'>", unsafe_allow_html=True)
 
-    # 인용 실패 원인
     col1, col2 = st.columns(2)
 
     with col1:
@@ -910,7 +893,6 @@ def render_strategy_analysis(strategy: dict, target_url: str):
 
     st.markdown("<hr class='custom-divider'>", unsafe_allow_html=True)
 
-    # GEO 가이드
     st.markdown("### 📋 GEO 최적화 가이드")
     geo_guides = strategy.get("geo_guides", [])
     for i, guide in enumerate(geo_guides):
@@ -941,8 +923,8 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("**🔑 API 키 설정**")
-    openai_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...", key="openai_key")
-    gemini_key = st.text_input("Gemini API Key", type="password", placeholder="AIza...", key="gemini_key")
+    openai_key  = st.text_input("OpenAI API Key", type="password", placeholder="sk-...",   key="openai_key")
+    gemini_key  = st.text_input("Gemini API Key", type="password", placeholder="AIza...", key="gemini_key")
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.markdown("**🤖 모델 선택**")
@@ -966,11 +948,11 @@ with st.sidebar:
     sim_count = st.slider("시뮬레이션 횟수", min_value=20, max_value=100, value=50, step=10,
                           help="실제 API 호출은 최대 20회, 나머지는 통계 외삽")
 
-    # API 연결 상태
+    # ── [수정] API 연결 상태 — 각 엔진 독립 표시 ──
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     st.markdown("**📡 연결 상태**")
 
-    gpt_ok = bool(openai_key and openai_key.startswith("sk-"))
+    gpt_ok    = bool(openai_key and openai_key.startswith("sk-"))
     gemini_ok = bool(gemini_key and len(gemini_key) > 10)
 
     col_s1, col_s2 = st.columns(2)
@@ -978,16 +960,31 @@ with st.sidebar:
         if gpt_ok:
             st.markdown("🟢 **GPT** 연결됨")
         else:
-            st.markdown("🔴 **GPT** 미연결")
+            st.markdown("⚪ **GPT** 미입력")   # 빨간불 → 흰불 (선택 항목임을 명시)
     with col_s2:
         if gemini_ok:
             st.markdown("🟢 **Gemini** 연결됨")
         else:
             st.markdown("🔴 **Gemini** 미연결")
 
+    # ── [수정] Gemini만 있어도 실행 가능 안내 ──
+    if gemini_ok and not gpt_ok:
+        st.markdown("""
+        <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
+        border-radius:8px;padding:10px 12px;margin-top:8px;font-size:0.75rem;color:rgba(255,255,255,0.75);">
+        ℹ️ Gemini 단독으로 분석 가능합니다.<br>GPT 결과는 공란으로 표시됩니다.
+        </div>
+        """, unsafe_allow_html=True)
+    elif not gemini_ok and gpt_ok:
+        st.markdown("""
+        <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
+        border-radius:8px;padding:10px 12px;margin-top:8px;font-size:0.75rem;color:rgba(255,255,255,0.75);">
+        ℹ️ GPT 단독으로 분석 가능합니다.<br>Gemini 결과는 공란으로 표시됩니다.
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("---")
 
-    # 데모 모드 버튼
     st.markdown("""
     <div style="color:rgba(255,255,255,0.9);font-size:0.82rem;font-weight:700;margin-bottom:6px;">
     🎬 보고용 데모 모드
@@ -1007,7 +1004,7 @@ with st.sidebar:
 # API 클라이언트 초기화
 # ─────────────────────────────────────────────
 def get_clients():
-    client_gpt = None
+    client_gpt    = None
     client_gemini = None
 
     if openai_key and openai_key.startswith("sk-"):
@@ -1036,7 +1033,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# 요약 지표 (상단)
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 with col_m1:
     st.metric("분석 엔진", "GPT + Gemini", "2개 동시 비교")
@@ -1051,7 +1047,6 @@ with col_m4:
 
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
-# 탭
 tab1, tab2, tab3 = st.tabs(["🤖 자동 분석형 (AI 질문 도출)", "✏️ 수동 분석형 (키워드 직접 입력)", "📅 AI 인용 히스토리"])
 
 client_gpt, client_gemini = get_clients()
@@ -1091,10 +1086,10 @@ with tab1:
         run_demo_auto = st.button("🎬 데모 실행", key="btn_demo_auto", use_container_width=True,
                                   help="API 키 없이 샘플 결과를 확인합니다")
 
-    # ── 데모 모드 (사이드바 버튼 또는 탭 내 버튼) ──
+    # ── 데모 모드 ──
     trigger_demo = run_demo_auto or st.session_state.get("run_demo", False)
     if trigger_demo:
-        st.session_state["run_demo"] = False  # 한 번만 실행
+        st.session_state["run_demo"] = False
         demo_url = url_auto.strip() if url_auto.strip() else "naver.com"
         target_url_d = normalize_url(demo_url)
         domain_d = extract_domain(target_url_d)
@@ -1113,7 +1108,6 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        # 프로그레스 애니메이션
         prog = st.progress(0)
         stat = st.empty()
         for i, q in enumerate(questions_d):
@@ -1124,7 +1118,6 @@ with tab1:
         prog.progress(1.0)
         stat.success("✅ 데모 시뮬레이션 완료!")
 
-        # 질문 목록
         st.markdown("**📝 타겟 질문 TOP 5 (샘플)**")
         for i, q in enumerate(questions_d, 1):
             st.markdown(f"""
@@ -1149,25 +1142,22 @@ with tab1:
                 c1.metric("GPT 점유율",    f"{r['gpt_rate']}%",    f"{r['gpt_hits']}회/{r['total']}회")
                 c2.metric("Gemini 점유율", f"{r['gemini_rate']}%", f"{r['gemini_hits']}회/{r['total']}회")
                 c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
-
                 render_strategy_analysis(demo_data["strategy"], target_url_d)
 
     # ── 실제 분석 ──
     elif run_real_auto:
         if not url_auto:
             st.error("사이트 URL을 입력해주세요.")
+        # ── [수정] Gemini 단독도 허용 ──
         elif not gpt_ok and not gemini_ok:
-            st.error("좌측 사이드바에서 최소 하나의 API 키를 입력해주세요.")
+            st.error("좌측 사이드바에서 최소 하나의 API 키(GPT 또는 Gemini)를 입력해주세요.")
         elif question_engine == "GPT" and not gpt_ok:
-            st.error("GPT API 키가 필요합니다.")
-        elif question_engine == "Gemini" and not gemini_ok:
-            st.error("Gemini API 키가 필요합니다.")
+            st.warning("⚠️ GPT API 키가 없습니다. Gemini로 질문을 도출합니다.")
         else:
             target_url = normalize_url(url_auto)
             domain = extract_domain(target_url)
 
             with st.spinner(f"**{domain}** 사이트 분석 중... 잠시만 기다려주세요."):
-                # Step 1: 질문 생성
                 st.markdown("**📝 Step 1 — 타겟 질문 도출 중...**")
                 try:
                     questions = generate_target_questions(
@@ -1193,7 +1183,6 @@ with tab1:
                     </div>
                     """, unsafe_allow_html=True)
 
-                # Step 2: 시뮬레이션
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
                 st.markdown("**📊 Step 2 — 각 질문별 시뮬레이션 진행 중...**")
 
@@ -1220,25 +1209,30 @@ with tab1:
                         all_results.append(result)
                     except Exception as e:
                         st.warning(f"질문 {idx + 1} 시뮬레이션 오류: {e}")
-                        all_results.append({"gpt_rate": 0, "gemini_rate": 0, "gpt_hits": 0, "gemini_hits": 0, "total": sim_count})
+                        all_results.append({"gpt_rate": None, "gemini_rate": None, "gpt_hits": None, "gemini_hits": None, "total": sim_count})
 
                 progress_bar.progress(1.0)
                 status_text.success("✅ 전체 시뮬레이션 완료!")
 
-                # 결과 시각화
                 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
                 render_bar_chart(all_results, questions, f"'{domain}' 질문별 AI 인용 점유율")
 
-                # 개별 결과 카드
                 st.markdown("### 📋 질문별 상세 결과")
                 for i, (q, r) in enumerate(zip(questions, all_results)):
-                    avg_rate = (r["gpt_rate"] + r["gemini_rate"]) / 2
-                    badge_cls = get_badge_class(avg_rate)
+                    # ── [수정] None인 엔진은 "—" 공란으로 표시 ──
+                    gpt_val    = f"{r['gpt_rate']}%"    if r['gpt_rate']    is not None else "—"
+                    gemini_val = f"{r['gemini_rate']}%" if r['gemini_rate'] is not None else "—"
+                    gpt_delta    = f"{r['gpt_hits']}회/{r['total']}회"    if r['gpt_hits']    is not None else "미측정"
+                    gemini_delta = f"{r['gemini_hits']}회/{r['total']}회" if r['gemini_hits'] is not None else "미측정"
+
+                    valid_rates = [v for v in [r['gpt_rate'], r['gemini_rate']] if v is not None]
+                    avg_rate = sum(valid_rates) / len(valid_rates) if valid_rates else 0
+
                     with st.expander(f"Q{i + 1}. {q[:50]}{'...' if len(q) > 50 else ''}", expanded=(i == 0)):
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("GPT 점유율", f"{r['gpt_rate']}%", f"{r['gpt_hits']}회/{r['total']}회")
-                        c2.metric("Gemini 점유율", f"{r['gemini_rate']}%", f"{r['gemini_hits']}회/{r['total']}회")
-                        c3.metric("평균 점유율", f"{avg_rate:.1f}%")
+                        c1.metric("GPT 점유율",    gpt_val,    gpt_delta)
+                        c2.metric("Gemini 점유율", gemini_val, gemini_delta)
+                        c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
 
                         if client_gpt or client_gemini:
                             with st.spinner("전략 분석 중..."):
@@ -1281,7 +1275,6 @@ with tab2:
             key="keyword_input"
         )
 
-    # 다중 키워드 입력
     multi_keywords = st.text_area(
         "📝 추가 키워드 (선택사항, 한 줄에 하나씩)",
         placeholder="추가로 분석할 키워드를 입력하세요 (최대 4개)\n예:\n네이버 뉴스 서비스 설명\n네이버 쇼핑 기능",
@@ -1341,7 +1334,6 @@ with tab2:
             })
         st.dataframe(pd.DataFrame(table_data_d), use_container_width=True, hide_index=True)
 
-        first_avg_d = (demo_res[0]["gpt_rate"] + demo_res[0]["gemini_rate"]) / 2
         for i_d, kw_d in enumerate(demo_kws):
             st.markdown("---")
             st.markdown(f"### 🎯 '{kw_d}' 전략 분석")
@@ -1353,12 +1345,13 @@ with tab2:
             st.error("사이트 URL을 입력해주세요.")
         elif not keyword_input:
             st.error("키워드 또는 질문을 입력해주세요.")
+        # ── [수정] Gemini 단독도 허용 ──
         elif not gpt_ok and not gemini_ok:
-            st.error("좌측 사이드바에서 최소 하나의 API 키를 입력해주세요.")
+            st.error("좌측 사이드바에서 최소 하나의 API 키(GPT 또는 Gemini)를 입력해주세요.")
         else:
+            target_url = normalize_url(url_manual)
             domain = extract_domain(target_url)
 
-            # 키워드 수집
             all_keywords = [keyword_input.strip()]
             if multi_keywords.strip():
                 extra = [k.strip() for k in multi_keywords.strip().split("\n") if k.strip()]
@@ -1390,30 +1383,29 @@ with tab2:
                     all_results.append(result)
                 except Exception as e:
                     st.warning(f"'{kw}' 분석 오류: {e}")
-                    all_results.append({"gpt_rate": 0, "gemini_rate": 0, "gpt_hits": 0, "gemini_hits": 0, "total": sim_count})
+                    all_results.append({"gpt_rate": None, "gemini_rate": None, "gpt_hits": None, "gemini_hits": None, "total": sim_count})
 
             progress_bar_m.progress(1.0)
             status_text_m.success("✅ 분석 완료!")
 
-            # 결과 차트
             render_bar_chart(all_results, all_keywords, f"'{domain}' 키워드별 AI 인용 점유율")
 
-            # 결과 요약 테이블
+            # ── [수정] 결과 요약 테이블 — None은 "—" 표시 ──
             st.markdown("### 📊 결과 요약")
             table_data = []
             for kw, r in zip(all_keywords, all_results):
-                avg = (r["gpt_rate"] + r["gemini_rate"]) / 2
+                valid_rates = [v for v in [r['gpt_rate'], r['gemini_rate']] if v is not None]
+                avg = sum(valid_rates) / len(valid_rates) if valid_rates else 0
                 table_data.append({
                     "키워드": kw,
-                    "GPT 점유율": f"{r['gpt_rate']}%",
-                    "Gemini 점유율": f"{r['gemini_rate']}%",
-                    "평균 점유율": f"{avg:.1f}%",
+                    "GPT 점유율":    f"{r['gpt_rate']}%"    if r['gpt_rate']    is not None else "—",
+                    "Gemini 점유율": f"{r['gemini_rate']}%" if r['gemini_rate'] is not None else "—",
+                    "평균 점유율":   f"{avg:.1f}%",
                     "상태": "✅ 양호" if avg >= 30 else ("⚡ 보통" if avg >= 10 else "❌ 개선 필요"),
                 })
             df = pd.DataFrame(table_data)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            # 전략 분석 (모든 키워드에 대해 실행)
             if all_results and (client_gpt or client_gemini):
                 for idx_s, (kw_s, r_s) in enumerate(zip(all_keywords, all_results)):
                     st.markdown("---")
@@ -1430,7 +1422,6 @@ with tab2:
                             st.error(f"전략 분석 오류: {e}")
 
 
-
 # ─────────────────────────────────────────────
 # Tab 3: AI 인용 히스토리
 # ─────────────────────────────────────────────
@@ -1445,7 +1436,6 @@ with tab3:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── 입력 영역 ──
     col_h1, col_h2, col_h3 = st.columns([1.2, 1, 1.5])
     with col_h1:
         brand_name = st.text_input(
@@ -1475,7 +1465,6 @@ with tab3:
         run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True,
                                      help="샘플 데이터로 히스토리를 즉시 확인합니다")
 
-    # ── 가상 데이터 생성 함수 ──
     def generate_history_demo(brand: str, days: int = 30) -> pd.DataFrame:
         random.seed(42)
         engines = ["ChatGPT", "Gemini", "Claude"]
@@ -1484,7 +1473,6 @@ with tab3:
         for d in range(days):
             dt = base_date + datetime.timedelta(days=d)
             for eng in engines:
-                # 엔진마다 베이스 레벨 다르게
                 base = {"ChatGPT": 12, "Gemini": 9, "Claude": 6}[eng]
                 count = max(0, int(random.gauss(base, 3.5)))
                 rows.append({"date": dt.strftime("%Y-%m-%d"), "engine": eng, "count": count})
@@ -1508,7 +1496,6 @@ with tab3:
             st.warning("표시할 데이터가 없습니다.")
             return
 
-        # 피벗
         pivot = df.pivot_table(index="date", columns="engine", values="count",
                                aggfunc="sum", fill_value=0).reset_index()
         pivot = pivot.sort_values("date")
@@ -1516,7 +1503,6 @@ with tab3:
         engines_present = [e for e in ["ChatGPT", "Gemini", "Claude"] if e in pivot.columns]
         colors = {"ChatGPT": "#111111", "Gemini": "#555555", "Claude": "#999999"}
 
-        # 핵심 지표
         total_citations = int(df["count"].sum())
         daily_totals = df.groupby("date")["count"].sum()
         peak_date = daily_totals.idxmax() if not daily_totals.empty else "-"
@@ -1532,7 +1518,6 @@ with tab3:
 
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-        # 누적 막대그래프
         fig = go.Figure()
         for eng in engines_present:
             fig.add_trace(go.Bar(
@@ -1582,7 +1567,6 @@ with tab3:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 엔진별 합계 테이블
         st.markdown("### 📋 엔진별 인용 요약")
         summary_rows = []
         for eng in engines_present:
@@ -1596,7 +1580,6 @@ with tab3:
             })
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-    # ── 데모 트리거 (사이드바 버튼 또는 탭 내 버튼) ──
     trigger_history_demo = run_history_demo or st.session_state.get("run_demo_history", False)
     if trigger_history_demo:
         st.session_state["run_demo_history"] = False
@@ -1619,7 +1602,6 @@ with tab3:
 
         render_history_chart(df_demo, demo_brand)
 
-    # ── 실제 파일 업로드 분석 ──
     elif run_history_real:
         if uploaded_log is None:
             st.error("CSV 로그 파일을 업로드해주세요.")
@@ -1631,7 +1613,6 @@ with tab3:
             if not df_real.empty:
                 render_history_chart(df_real, brand_label)
 
-    # ── 기본 안내 (아무 버튼도 누르지 않은 상태) ──
     else:
         st.markdown("""
         <div style="text-align:center;padding:48px 20px;color:#AAAAAA;">
