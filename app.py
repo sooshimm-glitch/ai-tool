@@ -820,19 +820,30 @@ def web_search_business_info(domain: str) -> str:
 def analyze_business_identity(client_gpt, client_gemini, url: str,
                                model_gpt: str, model_gemini) -> dict:
     """
-    1단계: 크롤링 시도
+    1단계: Jina로 사이트 크롤링 (사이트명+업종 검색 병행)
     2단계: 크롤링 실패 시 웹 검색으로 업종 정보 보완
     3단계: AI로 업종·서비스·타겟·브랜드명 정밀 분석
-    → "디지털 서비스" 같은 포괄적 폴백 방지
     """
-    meta   = crawl_site_metadata(url)
-    domain = extract_domain(url)
+    meta        = crawl_site_metadata(url)
+    domain      = extract_domain(url)
     domain_stem = domain.split(".")[0]
 
-    # 크롤링 실패 또는 정보 부족 → 웹 검색으로 보완
+    # 사이트명 + 업종 키워드로 Jina 추가 크롤링 (분석 정확도 향상)
+    jina_biz_context = ""
+    try:
+        biz_query = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(domain_stem + ' 업종 서비스 소개')}&hl=ko"
+        r = requests.get(biz_query, headers={"Accept": "text/markdown", "X-Timeout": "10"}, timeout=15)
+        if r.status_code == 200 and len(r.text) > 200:
+            jina_biz_context = r.text[:3000]
+    except Exception:
+        pass
+
+    # 크롤링 실패 또는 정보 부족 → Bing 웹 검색으로 추가 보완
     web_context = ""
     if not meta["crawl_ok"] or (not meta["title"] and not meta["description"]):
         web_context = web_search_business_info(domain)
+
+    combined_context = "\n".join(filter(None, [jina_biz_context, web_context]))[:4000]
 
     prompt = f"""당신은 비즈니스 인텔리전스 전문가입니다.
 아래 웹사이트 정보를 바탕으로 업종과 서비스를 **정확하고 구체적으로** 분석하세요.
@@ -845,8 +856,8 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
 설명: {meta.get('description', '(없음)')}
 본문: {meta.get('html_snippet', '')[:2000]}
 
-[웹 검색 보완 정보]
-{web_context if web_context else '(없음)'}
+[사이트명 + 업종 검색 보완 정보]
+{combined_context if combined_context else '(없음)'}
 
 [분석 지침]
 - 업종은 반드시 실제 구체적인 카테고리로 작성 (예: "퍼포먼스 마케팅 광고대행사", "온라인 패션 쇼핑몰", "B2B SaaS 인사관리", "법률 플랫폼", "음식 배달 서비스")
@@ -862,8 +873,7 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
   "industry_category": "대분류 (예: 광고/마케팅, 이커머스, SaaS, 금융, 교육, 의료, 부동산, 제조, 물류 등)",
   "core_product": "핵심 서비스/상품 한 문장",
   "target_audience": "주요 타겟 고객층 (구체적으로)",
-  "key_services": ["서비스1", "서비스2", "서비스3"],
-  "confidence": "high/medium/low (정보 충분도)"
+  "key_services": ["서비스1", "서비스2", "서비스3"]
 }}"""
 
     result_str = ""
@@ -881,16 +891,14 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
         json_match = re.search(r'\{.*\}', result_str, re.DOTALL)
         if json_match:
             parsed = json.loads(json_match.group())
-            # "디지털 서비스" 같은 포괄 업종이 나오면 재시도
             industry = parsed.get("industry", "")
             bad_industries = ["디지털 서비스", "IT 서비스", "온라인 서비스",
                               "인터넷 서비스", "웹 서비스", "소프트웨어"]
-            if any(bad in industry for bad in bad_industries) and web_context:
-                # 웹 맥락으로 재분석
-                retry_prompt = f"""도메인 {domain}의 업종을 웹 검색 정보 기반으로 정확히 분류하세요.
+            if any(bad in industry for bad in bad_industries) and combined_context:
+                retry_prompt = f"""도메인 {domain}의 업종을 검색 정보 기반으로 정확히 분류하세요.
 
 [검색 정보]
-{web_context}
+{combined_context[:2000]}
 
 가장 구체적인 업종명을 JSON으로만 출력 (예: {{"industry": "퍼포먼스 마케팅 광고대행사"}}):"""
                 try:
@@ -903,11 +911,11 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
                         parsed["industry"] = json.loads(m2.group()).get("industry", industry)
                 except Exception:
                     pass
+            parsed.pop("confidence", None)  # confidence 필드 제거
             return parsed
     except Exception:
         pass
 
-    # 폴백: 도메인 기반이지만 포괄 업종은 쓰지 않음
     return {
         "brand_name": domain_stem.upper(),
         "industry": f"{domain_stem} 관련 서비스",
@@ -915,7 +923,6 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
         "core_product": f"{domain} 서비스",
         "target_audience": "잠재 고객",
         "key_services": [],
-        "confidence": "low",
     }
 
 
@@ -1994,11 +2001,9 @@ with tab1:
                     st.session_state["ai_analyzed_industry"] = _detected_industry
                     st.session_state["ai_analyzed_biz_info"] = _pre_biz
                     st.session_state["ai_analyzed_url"] = _pre_url
-                    _conf = {"high": "🟢 높음", "medium": "🟡 보통", "low": "🔴 낮음"}.get(
-                        _pre_biz.get("confidence", "medium"), "🟡 보통")
                     st.success(
                         f"✅ 업종 자동 분석 완료: **{_detected_industry}** "
-                        f"(브랜드: {_pre_biz.get('brand_name','—')} / 신뢰도: {_conf})"
+                        f"(브랜드: {_pre_biz.get('brand_name','—')})"
                     )
                     st.info("업종이 맞지 않으면 위 입력창에서 직접 수정 후 [자동 분석 시작]을 누르세요.")
                     st.rerun()
@@ -2100,14 +2105,12 @@ with tab1:
                         biz_info["industry"] = _user_industry
 
                     st.success("✅ 비즈니스 분석 완료")
-                    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-                    col_b1.metric("브랜드명",   biz_info.get("brand_name", "—"),
+                    col_b1, col_b2, col_b3 = st.columns(3)
+                    col_b1.metric("브랜드명", biz_info.get("brand_name", "—"),
                                   "🤖 AI 분석")
-                    col_b2.metric("업종",       biz_info.get("industry", "—"),
+                    col_b2.metric("업종",     biz_info.get("industry", "—"),
                                   "✏️ 사용자 확정" if _user_industry else "🤖 AI 분석")
-                    col_b3.metric("분류",       biz_info.get("industry_category", "—"))
-                    col_b4.metric("분석 신뢰도", {"high":"🟢 높음","medium":"🟡 보통","low":"🔴 낮음"}.get(
-                                  biz_info.get("confidence","medium"), "🟡 보통"))
+                    col_b3.metric("분류",     biz_info.get("industry_category", "—"))
                     if biz_info.get("key_services"):
                         st.caption("📋 주요 서비스: " + " · ".join(biz_info["key_services"][:5]))
                     st.markdown("<div style=\'height:10px\'></div>", unsafe_allow_html=True)
@@ -2117,65 +2120,11 @@ with tab1:
                     if _user_industry:
                         biz_info["industry"] = _user_industry
 
-            # ── Step 1: 경쟁사 도출 (사용자 확정 업종 + Jina 검색 근거 + 검증) ──
+            # ── 경쟁사 도출 기능 제거됨 ──
             competitors_list = []
-            scope_label = market_scope
-            # 사용자가 UI에서 최종 확정한 업종값 (Step C에서 biz_info에 이미 반영됨)
-            _confirmed_industry = biz_info.get("industry", "")
-            with st.spinner(f"🏢 {scope_label} 기준 경쟁사 {n_competitors}개 도출 중 (Jina 검색 + AI 검증)..."):
-                st.markdown(
-                    f"**🏢 Step 1 — [{scope_label}] 업종 '{_confirmed_industry}' 기반 경쟁사 도출 중...**"
-                )
-                if _confirmed_industry:
-                    st.caption(f"📌 사용자 확정 업종 최우선 적용: **{_confirmed_industry}**")
-                try:
-                    competitors_list = discover_competitors(
-                        client_gpt, client_gemini,
-                        biz_info, target_url,
-                        market_scope=market_scope,
-                        model_gpt=gpt_model,
-                        n_competitors=n_competitors,
-                        confirmed_industry=_confirmed_industry,
-                    )
-                    verified_count = sum(
-                        1 for c in competitors_list
-                        if c.get("domain_valid") and c.get("is_direct_competitor")
-                    )
-                    st.success(
-                        f"✅ 경쟁사 {len(competitors_list)}개 도출 완료 "
-                        f"(검증 통과: {verified_count}/{len(competitors_list)})"
-                    )
-                    # 경쟁사 미리보기 카드 (검증 배지 포함)
-                    comp_cols = st.columns(min(len(competitors_list), 5))
-                    for ci, comp in enumerate(competitors_list[:5]):
-                        with comp_cols[ci]:
-                            pos = comp.get("market_position", "")
-                            pos_colors = {"업계 1위":"#10B981","신흥 강자":"#F59E0B","틈새 전문":"#6366F1"}
-                            pc = pos_colors.get(pos, "#888888")
-                            is_verified = comp.get("domain_valid") and comp.get("is_direct_competitor")
-                            verify_badge = (
-                                '<div style="color:#10B981;font-size:0.68rem;margin-top:4px;">✅ 검증됨</div>'
-                                if is_verified else
-                                '<div style="color:#F59E0B;font-size:0.68rem;margin-top:4px;">⚠️ 미검증</div>'
-                            )
-                            evidence = comp.get("evidence", "")
-                            evidence_tip = f'title="{evidence}"' if evidence else ""
-                            st.markdown(f"""
-                            <div {evidence_tip} style="background:white;border-radius:12px;padding:12px 14px;
-                            border:1.5px solid {"#D1FAE5" if is_verified else "#FEF3C7"};
-                            text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-                                <div style="font-weight:700;font-size:0.85rem;color:#111;">{comp.get('brand_name','')}</div>
-                                <div style="color:#888;font-size:0.72rem;margin:2px 0;">{comp.get('domain','')}</div>
-                                <div style="background:{pc};color:white;border-radius:20px;
-                                font-size:0.7rem;font-weight:700;padding:2px 8px;margin-top:6px;display:inline-block;">
-                                {pos if pos else '경쟁사'}</div>
-                                {verify_badge}
-                            </div>
-                            """, unsafe_allow_html=True)
-                except Exception as e:
-                    st.warning(f"경쟁사 도출 실패 (기본값 진행): {e}")
 
-            # ── Step 2: 타겟 질문 도출 ──
+            # ── Step 2: 타겟 질문 도출 (최적화) ──
+            questions = []
             with st.spinner(f"{domain} 타겟 질문 도출 중..."):
                 st.markdown("**📝 Step 2 — 브랜드·업종 맥락 기반 타겟 질문 도출 중...**")
                 try:
@@ -2188,10 +2137,9 @@ with tab1:
                     st.success(f"✅ TOP {len(questions)}개 질문 도출 완료")
                 except Exception as e:
                     st.error(f"질문 도출 실패: {e}")
-                    questions = []
 
             if questions:
-                st.markdown("**생성된 타겟 질문:**")
+                st.markdown("**📋 생성된 타겟 질문:**")
                 for i, q in enumerate(questions, 1):
                     st.markdown(f"""
                     <div style="background:white;border-radius:10px;padding:11px 16px;margin:5px 0;
@@ -2206,65 +2154,64 @@ with tab1:
 
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-                # ── Step 3: 질문별 시뮬레이션 ──
-                st.markdown("**📊 Step 3 — 질문별 병렬 시뮬레이션 (GPT·Gemini 동시)**")
+                # ── Step 3: 질문별 순차 시뮬레이션 ──
+                # 예상 시간 계산: GPT·Gemini 각 sim_count회, 질문당 약 (sim_count * 0.5)초 소요
+                _active_engines = (1 if client_gpt else 0) + (1 if client_gemini else 0)
+                _est_sec_per_q  = sim_count * 0.6 * _active_engines
+                _est_total_sec  = int(_est_sec_per_q * len(questions))
+                _est_str = (
+                    f"{_est_total_sec}초" if _est_total_sec < 60
+                    else f"{_est_total_sec // 60}분 {_est_total_sec % 60}초"
+                )
+                st.markdown(
+                    f"**📊 Step 3 — 질문별 AI 인용 시뮬레이션**  "
+                    f"<span style='color:#888;font-size:0.82rem;'>⏱ 예상 소요 시간: 약 {_est_str} "
+                    f"({sim_count}회 × {len(questions)}개 질문 × {_active_engines}개 엔진)</span>",
+                    unsafe_allow_html=True
+                )
 
-                def _simulate_one_auto(args):
-                    idx, question = args
+                progress_bar = st.progress(0)
+                status_text  = st.empty()
+                time_text    = st.empty()
+                all_results  = []
+                _sim_start   = time.time()
+
+                # 순차 처리 — Streamlit 위젯 업데이트 안전하게
+                for q_idx, question in enumerate(questions):
+                    _elapsed = int(time.time() - _sim_start)
+                    _remain  = max(0, _est_total_sec - _elapsed)
+                    _rem_str = f"{_remain}초" if _remain < 60 else f"{_remain // 60}분 {_remain % 60}초"
+                    status_text.markdown(
+                        f"🔄 질문 {q_idx+1}/{len(questions)} 시뮬레이션 중 — *{question[:45]}{'...' if len(question)>45 else ''}*"
+                    )
+                    time_text.caption(f"⏱ 경과: {_elapsed}초 | 남은 예상 시간: {_rem_str}")
+
                     try:
-                        return idx, run_simulation(
+                        res = run_simulation(
                             client_gpt, client_gemini, question, target_url,
                             gpt_model, client_gemini, n=sim_count, biz_info=biz_info,
                         )
                     except Exception:
-                        return idx, {"gpt_rate": None, "gemini_rate": None, "avg_rate": None,
-                                     "gpt_hits": None, "gemini_hits": None, "total": sim_count,
-                                     "gpt_ci": (None, None), "gemini_ci": (None, None),
-                                     "gpt_samples": [], "gemini_samples": []}
+                        res = {
+                            "gpt_rate": None, "gemini_rate": None, "avg_rate": None,
+                            "gpt_hits": None, "gemini_hits": None, "total": sim_count,
+                            "gpt_ci": (None, None), "gemini_ci": (None, None),
+                            "gpt_samples": [], "gemini_samples": []
+                        }
+                    all_results.append(res)
+                    progress_bar.progress((q_idx + 1) / len(questions))
 
-                progress_bar = st.progress(0)
-                status_text  = st.empty()
-                result_map   = {}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(questions))) as pool:
-                    ftmap = {pool.submit(_simulate_one_auto, arg): arg[0]
-                             for arg in enumerate(questions)}
-                    done_count = 0
-                    for future in concurrent.futures.as_completed(ftmap):
-                        done_count += 1
-                        idx, res = future.result()
-                        result_map[idx] = res
-                        progress_bar.progress(done_count / len(questions))
-                        status_text.markdown(
-                            f"🔄 {done_count}/{len(questions)} 질문 완료 — *{questions[idx][:40]}...*")
-
-                all_results = [result_map[i] for i in range(len(questions))]
+                _total_elapsed = int(time.time() - _sim_start)
+                _tel_str = f"{_total_elapsed}초" if _total_elapsed < 60 else f"{_total_elapsed // 60}분 {_total_elapsed % 60}초"
+                status_text.success(f"✅ 전체 시뮬레이션 완료! (실제 소요: {_tel_str})")
+                time_text.empty()
                 progress_bar.progress(1.0)
-                status_text.success("✅ 전체 시뮬레이션 완료!")
 
                 # 질문별 점유율 차트
                 render_bar_chart(all_results, questions,
                                  f"'{biz_info.get('brand_name', domain)}' 질문별 AI 인용 점유율")
 
-                # ── Step 4: 경쟁사 SOV 분석 (대표 질문으로) ──
-                if competitors_list:
-                    st.markdown("---")
-                    st.markdown("**🏆 Step 4 — 경쟁사 대비 AI 인용 점유율 (SOV) 분석**")
-                    st.caption(f"대표 질문: *{questions[0]}* | 범위: {scope_label} | 경쟁사 {len(competitors_list)}개")
-                    with st.spinner("경쟁사 SOV 시뮬레이션 진행 중..."):
-                        try:
-                            sov_data = run_sov_simulation(
-                                client_gpt, client_gemini,
-                                questions[0], target_url,
-                                competitors_list, biz_info,
-                                model_gpt=gpt_model,
-                                n=max(10, sim_count // 3),
-                            )
-                            render_sov_chart(sov_data,
-                                             f"[{scope_label}] '{biz_info.get('brand_name', domain)}' vs 경쟁사 SOV")
-                        except Exception as e:
-                            st.warning(f"SOV 분석 오류: {e}")
-
-                # ── Step 5: 질문별 상세 결과 ──
+                # ── Step 4: 질문별 상세 결과 ──
                 st.markdown("### 📋 질문별 상세 결과")
                 for i, (q, r) in enumerate(zip(questions, all_results)):
                     gpt_val    = f"{r['gpt_rate']}%"    if r.get('gpt_rate')    is not None else "—"
@@ -2274,13 +2221,12 @@ with tab1:
                     valid_rates  = [v for v in [r.get('gpt_rate'), r.get('gemini_rate')] if v is not None]
                     avg_rate     = sum(valid_rates) / len(valid_rates) if valid_rates else 0
 
-                    # 신뢰구간
                     gpt_ci  = r.get("gpt_ci",    (None, None))
                     gem_ci  = r.get("gemini_ci", (None, None))
                     ci_text = ""
-                    if gpt_ci[0] is not None:
+                    if gpt_ci and gpt_ci[0] is not None:
                         ci_text += f"GPT: {gpt_ci[0]}%~{gpt_ci[1]}%  "
-                    if gem_ci[0] is not None:
+                    if gem_ci and gem_ci[0] is not None:
                         ci_text += f"Gemini: {gem_ci[0]}%~{gem_ci[1]}%"
 
                     with st.expander(f"Q{i+1}. {q[:55]}{'...' if len(q)>55 else ''}", expanded=(i == 0)):
@@ -2290,7 +2236,6 @@ with tab1:
                         c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
                         c4.metric("95% 신뢰구간",  ci_text if ci_text else "—")
 
-                        # 응답 샘플 (인용된 경우)
                         gpt_samp = r.get("gpt_samples", [])
                         gem_samp = r.get("gemini_samples", [])
                         if gpt_samp or gem_samp:
