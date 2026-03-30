@@ -2066,7 +2066,7 @@ with tab1:
                 render_strategy_analysis(demo_data["strategy"], target_url_d)
 
     # ── 실제 분석 ──
-    elif run_real_auto and not pre_analyze:
+    elif run_real_auto and not pre_analyze_clicked:
         if not url_auto:
             st.error("사이트 URL을 입력해주세요.")
         elif not gpt_ok and not gemini_ok:
