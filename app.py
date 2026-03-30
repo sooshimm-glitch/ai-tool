@@ -41,7 +41,7 @@ if "dark_mode" not in st.session_state:
 _dark = st.session_state["dark_mode"]
 
 # ─────────────────────────────────────────────
-# 글로벌 CSS — 다크/라이트 모드 통합 (오류 완벽 해결)
+# 글로벌 CSS — 다크/라이트 모드 통합 (글자 묻힘 완벽 해결)
 # ─────────────────────────────────────────────
 if _dark:
     _bg        = "#0F0F0F"
@@ -71,7 +71,7 @@ else:
     _card      = "#FFFFFF"
     _border    = "#DDDDDD"
     _text      = "#111111"
-    _text_muted= "#666666"
+    _text_muted= "#555555"
     _primary   = "#111111"
     _accent    = "#444444"
     _shadow    = "0 4px 24px rgba(0,0,0,0.08)"
@@ -105,19 +105,38 @@ st.markdown(f"""
     --shadow-hover:{_shadow_h};
 }}
 
-html, body, [class*="css"] {{
-    font-family: 'Plus Jakarta Sans', sans-serif;
+/* 1. 전체 배경 & 기본 폰트 */
+html, body, [class*="css"], .stApp {{
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
     background-color: var(--bg) !important;
-    color: var(--text) !important;
 }}
-.stApp {{ background: var(--bg) !important; }}
 
-/* 마크다운 내부 텍스트 색상 전역 강제 설정 */
-.stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span {{
+/* 2. 메인 화면 텍스트 색상 강제 고정 (라이트모드 글씨 실종 완벽 차단) */
+.stApp p, .stApp span, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp .markdown-text-container {{
     color: var(--text) !important;
 }}
 
-/* ── 헤더 ── */
+/* 3. 사이드바 강제 예외 처리 (어두운 배경이므로 항상 흰색 텍스트) */
+[data-testid="stSidebar"] {{
+    background: {_sidebar_gr} !important;
+}}
+[data-testid="stSidebar"] p, 
+[data-testid="stSidebar"] span, 
+[data-testid="stSidebar"] label, 
+[data-testid="stSidebar"] h1, 
+[data-testid="stSidebar"] h2, 
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {{
+    color: #F8FAFC !important;
+}}
+[data-testid="stSidebar"] .stTextInput > div > div > input,
+[data-testid="stSidebar"] .stSelectbox > div > div {{
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    color: white !important;
+}}
+
+/* 4. 메인 헤더 영역 (어두운 그라데이션이므로 흰색 고정) */
 .main-header {{
     background: {_header_gr};
     border-radius: 20px;
@@ -125,111 +144,46 @@ html, body, [class*="css"] {{
     margin-bottom: 28px;
     position: relative;
     overflow: hidden;
-    box-shadow: var(--shadow-hover);
+    box-shadow: {_shadow_h};
 }}
-.main-header::before {{
-    content:'';position:absolute;top:-40px;right:-40px;
-    width:220px;height:220px;
-    background:rgba(255,255,255,0.07);border-radius:50%;
+.main-header h1, .main-header p, .main-header span {{
+    color: white !important;
+    position: relative;
+    z-index: 1;
 }}
-.main-header h1 {{ color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; position:relative; z-index:1; letter-spacing:-0.5px; }}
-.main-header p  {{ color:rgba(255,255,255,0.82) !important; font-size:1rem !important; margin:8px 0 0 0 !important; position:relative; z-index:1; }}
 
-/* ── 카드 ── */
-.metric-card, .result-card {{
-    background: var(--card) !important;
-    border-radius: 16px;
-    padding: 22px 24px;
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
-    transition: box-shadow 0.2s;
-    color: var(--text);
+/* 5. 버튼 디자인 및 텍스트 고정 */
+.stButton > button {{
+    background: {_btn_gr} !important;
+    border: none !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
 }}
-.result-card h4 {{ color: var(--text) !important; }}
+.stButton > button p, .stButton > button span {{
+    color: white !important;
+    font-weight: 700 !important;
+}}
 
-/* ── 탭 ── */
+/* 6. 탭 영역 디자인 */
 .stTabs [data-baseweb="tab-list"] {{
     background: {_tab_bg} !important;
     border-radius: 14px !important;
-    padding: 6px !important;
     border: 1px solid var(--border) !important;
-    box-shadow: var(--shadow) !important;
+    padding: 6px !important;
 }}
-.stTabs [data-baseweb="tab"] {{
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-    font-size: 0.9rem !important;
+.stTabs [data-baseweb="tab"] p, .stTabs [data-baseweb="tab"] span {{
     color: var(--text-muted) !important;
-    padding: 10px 22px !important;
+    font-weight: 600 !important;
 }}
 .stTabs [aria-selected="true"] {{
     background: {_tab_sel} !important;
+    border-radius: 10px !important;
+}}
+.stTabs [aria-selected="true"] p, .stTabs [aria-selected="true"] span {{
     color: {"white" if not _dark else "#F0F0F0"} !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
 }}
 
-/* ── 인풋 ── */
-.stTextInput > div > div > input,
-.stTextArea > div > div > textarea {{
-    border-radius: 12px !important;
-    border: 1.5px solid var(--border) !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 0.92rem !important;
-    background: {_input_bg} !important;
-    color: var(--text) !important;
-    transition: border-color 0.2s, box-shadow 0.2s !important;
-}}
-.stTextInput > div > div > input:focus,
-.stTextArea > div > div > textarea:focus {{
-    border-color: var(--primary) !important;
-    box-shadow: 0 0 0 3px rgba(128,128,128,0.15) !important;
-}}
-
-/* ── 버튼 ── */
-.stButton > button {{
-    background: {_btn_gr} !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 12px !important;
-    font-weight: 700 !important;
-    font-size: 0.95rem !important;
-    padding: 12px 28px !important;
-    transition: all 0.2s !important;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-}}
-.stButton > button:hover {{
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
-}}
-
-/* ── 사이드바 ── */
-[data-testid="stSidebar"] {{
-    background: {_sidebar_gr} !important;
-}}
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {{ 
-    color: white !important; 
-}}
-[data-testid="stSidebar"] .stTextInput > div > div > input {{
-    background: rgba(255,255,255,0.1) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-    color: white !important;
-    border-radius: 10px !important;
-}}
-[data-testid="stSidebar"] .stSelectbox > div > div {{
-    background: rgba(255,255,255,0.1) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-    border-radius: 10px !important;
-    color: white !important;
-}}
-
-/* ── 프로그레스 바 ── */
-.stProgress > div > div > div {{
-    background: {_progress} !important;
-    border-radius: 8px !important;
-}}
-
-/* ── 메트릭 ── */
+/* 7. 메트릭 컨테이너 세부 텍스트 매핑 */
 div[data-testid="metric-container"] {{
     background: var(--card) !important;
     border-radius: 14px !important;
@@ -237,23 +191,30 @@ div[data-testid="metric-container"] {{
     border: 1px solid var(--border) !important;
     box-shadow: var(--shadow) !important;
 }}
-div[data-testid="metric-container"] * {{ color: var(--text) !important; }}
+div[data-testid="metric-container"] label, div[data-testid="metric-container"] label p {{
+    color: var(--text-muted) !important;
+}}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"] > div {{
+    color: var(--text) !important;
+}}
 
-/* ── 사이드바 로고 ── */
-.sidebar-logo {{ text-align:center; padding:20px 0 24px 0; border-bottom:1px solid rgba(255,255,255,0.15); margin-bottom:20px; }}
-.sidebar-logo .logo-icon {{ font-size:2.5rem; display:block; margin-bottom:8px; }}
-.sidebar-logo h2 {{ color:white !important; font-size:1.1rem !important; font-weight:800 !important; margin:0 !important; }}
-.sidebar-logo p  {{ color:rgba(255,255,255,0.6) !important; font-size:0.75rem !important; margin:4px 0 0 0 !important; }}
+/* 8. 입력 폼 텍스트 및 배경 */
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea {{
+    background: {_input_bg} !important;
+    border: 1.5px solid var(--border) !important;
+    color: var(--text) !important;
+}}
 
-/* ── 구분선 ── */
-.custom-divider {{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); margin:24px 0; }}
+/* 9. 데이터프레임 다크모드 대응 */
+.stDataFrame, [data-testid="stTable"] {{ 
+    background: var(--card) !important; 
+}}
 
-/* ── 익스팬더 & 테이블 다크모드 대응 ── */
+/* 10. 익스팬더(아코디언) 다크모드 대응 */
 {"" if not _dark else """
 .stExpander { background: #1E1E1E !important; border-color: #333333 !important; }
-.stExpander summary { color: #E0E0E0 !important; }
-.stDataFrame { background: #1E1E1E !important; }
-[data-testid="stTable"] { background: #1E1E1E !important; }
+.stExpander summary p, .stExpander summary span { color: #E0E0E0 !important; }
 """}
 </style>
 """, unsafe_allow_html=True)
@@ -349,12 +310,8 @@ def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
 
     return [v for v in variants if v and len(v) >= 2]
 
-# ─────────────────────────────────────────────
-# 신뢰구간 계산 (Wilson Score Interval)
-# ─────────────────────────────────────────────
 def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
-    if n == 0:
-        return 0.0, 100.0
+    if n == 0: return 0.0, 100.0
     z   = 1.96 if confidence == 0.95 else 2.576
     p   = hits / n
     denom = 1 + z**2 / n
@@ -365,6 +322,109 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
     return round(lo, 1), round(hi, 1)
 
 # ─────────────────────────────────────────────
+# 데모 데이터 (보고용) - (누락되었던 부분 복구!)
+# ─────────────────────────────────────────────
+DEMO_SCENARIOS = {
+    "naver.com": {
+        "questions": [
+            "국내 최고의 포털 사이트는 어디인가요?",
+            "한국에서 뉴스 검색하기 좋은 사이트는?",
+            "네이버 쇼핑과 쿠팡 중 어디가 더 편리한가요?",
+            "블로그 만들기 좋은 플랫폼 추천해주세요",
+            "한국어 지도 서비스 어디가 제일 정확한가요?",
+        ],
+        "results": [
+            {"gpt_rate": 58.3, "gemini_rate": 62.1, "gpt_hits": 58, "gemini_hits": 62, "total": 100},
+            {"gpt_rate": 44.7, "gemini_rate": 51.2, "gpt_hits": 45, "gemini_hits": 51, "total": 100},
+            {"gpt_rate": 31.5, "gemini_rate": 27.8, "gpt_hits": 32, "gemini_hits": 28, "total": 100},
+            {"gpt_rate": 22.0, "gemini_rate": 18.4, "gpt_hits": 22, "gemini_hits": 18, "total": 100},
+            {"gpt_rate": 39.6, "gemini_rate": 43.3, "gpt_hits": 40, "gemini_hits": 43, "total": 100},
+        ],
+    },
+    "coupang.com": {
+        "questions": [
+            "한국에서 가장 빠른 배송 쇼핑몰은?",
+            "로켓배송으로 당일 받을 수 있는 쇼핑몰은?",
+            "쿠팡과 네이버쇼핑 가격 비교해주세요",
+            "쿠팡 로켓와우 멤버십 혜택은?",
+            "신선식품 새벽배송 어디가 좋나요?",
+        ],
+        "results": [
+            {"gpt_rate": 71.2, "gemini_rate": 68.5, "gpt_hits": 71, "gemini_hits": 69, "total": 100},
+            {"gpt_rate": 65.8, "gemini_rate": 59.3, "gpt_hits": 66, "gemini_hits": 59, "total": 100},
+            {"gpt_rate": 38.4, "gemini_rate": 42.1, "gpt_hits": 38, "gemini_hits": 42, "total": 100},
+            {"gpt_rate": 52.7, "gemini_rate": 48.9, "gpt_hits": 53, "gemini_hits": 49, "total": 100},
+            {"gpt_rate": 29.1, "gemini_rate": 33.6, "gpt_hits": 29, "gemini_hits": 34, "total": 100},
+        ],
+    },
+    "default": {
+        "questions": [
+            "이 서비스의 주요 특징은 무엇인가요?",
+            "비슷한 경쟁 서비스와 비교했을 때 장점은?",
+            "초보자도 쉽게 사용할 수 있나요?",
+            "가격 정책과 요금제는 어떻게 되나요?",
+            "고객 지원 및 문의는 어떻게 하나요?",
+        ],
+        "results": [
+            {"gpt_rate": 7.2,  "gemini_rate": 5.4,  "gpt_hits": 7,  "gemini_hits": 5,  "total": 100},
+            {"gpt_rate": 4.8,  "gemini_rate": 8.1,  "gpt_hits": 5,  "gemini_hits": 8,  "total": 100},
+            {"gpt_rate": 12.3, "gemini_rate": 9.7,  "gpt_hits": 12, "gemini_hits": 10, "total": 100},
+            {"gpt_rate": 3.1,  "gemini_rate": 6.5,  "gpt_hits": 3,  "gemini_hits": 7,  "total": 100},
+            {"gpt_rate": 15.6, "gemini_rate": 11.2, "gpt_hits": 16, "gemini_hits": 11, "total": 100},
+        ],
+    },
+}
+
+DEMO_STRATEGY = {
+    "competitors": [
+        {"rank": 1, "domain": "wikipedia.org",    "reason": "중립적 참조 정보 풍부"},
+        {"rank": 2, "domain": "namu.wiki",         "reason": "한국어 위키 전문"},
+        {"rank": 3, "domain": "tistory.com",       "reason": "SEO 최적화 블로그"},
+        {"rank": 4, "domain": "brunch.co.kr",      "reason": "전문가 롱폼 콘텐츠"},
+        {"rank": 5, "domain": "target-site.com",   "reason": "← 내 사이트"},
+        {"rank": 6, "domain": "medium.com",        "reason": "영문 고품질 아티클"},
+        {"rank": 7, "domain": "velog.io",          "reason": "개발자 기술 블로그"},
+        {"rank": 8, "domain": "inflearn.com",      "reason": "학습 플랫폼 권위"},
+        {"rank": 9, "domain": "wanted.co.kr",      "reason": "직종별 정보 DB"},
+        {"rank": 10, "domain": "blog.naver.com",   "reason": "포털 연계 트래픽"},
+    ],
+    "diagnoses": [
+        "구조화 데이터(Schema.org) 마크업이 없어 AI가 콘텐츠 맥락을 파악하기 어려움",
+        "FAQ 섹션 부재 — AI는 Q&A 형태 콘텐츠를 인용 우선순위로 처리함",
+        "핵심 키워드 밀도가 경쟁사 대비 40% 낮아 관련성 점수에서 불이익 발생",
+    ],
+    "keywords": [
+        "AI 인용 최적화 전략 2025",
+        "GEO(Generative Engine Optimization) 적용 방법",
+        "챗봇 검색에서 브랜드 노출 높이는 법",
+        "LLM 친화적 콘텐츠 구조 만들기",
+        "AI 답변 출처로 선택되는 사이트 조건",
+    ],
+    "geo_guides": [
+        "1. FAQ 블록 추가\n홈페이지 하단에 '자주 묻는 질문' 섹션을 추가하고, 질문·답변 형식으로 핵심 서비스를 설명하세요. AI는 Q&A 구조를 높은 신뢰도 콘텐츠로 인식합니다.",
+        "2. 구조화 데이터 마크업 적용\n<script type='application/ld+json'>으로 Organization, WebSite, FAQPage 스키마를 삽입하면 AI 크롤러가 사이트를 명확하게 분류합니다.",
+        "3. 핵심 가치 제안을 첫 문단에 배치\n'저희 서비스는 ~입니다' 형태의 명확한 정의 문장을 페이지 최상단에 위치시켜 AI가 사이트를 특정 주제의 권위 있는 출처로 인식하게 합니다.",
+    ],
+}
+
+def get_demo_data(url: str) -> dict:
+    domain = extract_domain(url).lower()
+    for key in DEMO_SCENARIOS:
+        if key != "default" and key in domain:
+            scenario = DEMO_SCENARIOS[key].copy()
+            strategy = DEMO_STRATEGY.copy()
+            for comp in strategy["competitors"]:
+                if "target-site" in comp["domain"]:
+                    comp["domain"] = domain
+            return {"scenario": scenario, "strategy": strategy}
+    scenario = DEMO_SCENARIOS["default"].copy()
+    strategy = DEMO_STRATEGY.copy()
+    for comp in strategy["competitors"]:
+        if "target-site" in comp["domain"]:
+            comp["domain"] = extract_domain(url) if url else "your-site.com"
+    return {"scenario": scenario, "strategy": strategy}
+
+# ─────────────────────────────────────────────
 # Jina Reader 기반 경쟁사 검색 컨텍스트 수집
 # ─────────────────────────────────────────────
 def fetch_competitor_search_context(industry: str, brand: str, market_scope: str) -> str:
@@ -372,7 +432,6 @@ def fetch_competitor_search_context(industry: str, brand: str, market_scope: str
     queries = [
         f"{industry} 경쟁사 {scope_kw}",
         f"{brand} 경쟁사 대안 서비스",
-        f"{industry} 주요 업체 비교",
     ]
     collected = []
     headers = {"Accept": "text/markdown, text/plain, */*", "X-Return-Format": "markdown", "X-Timeout": "10"}
@@ -381,72 +440,38 @@ def fetch_competitor_search_context(industry: str, brand: str, market_scope: str
             search_url = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(q)}&hl=ko"
             resp = requests.get(search_url, headers=headers, timeout=15)
             if resp.status_code == 200 and len(resp.text) > 300:
-                snippet = resp.text[:3000]
-                collected.append(f"[검색: {q}]\n{snippet}")
+                collected.append(f"[검색: {q}]\n{resp.text[:3000]}")
         except Exception:
             continue
     return "\n\n".join(collected)[:8000]
 
-# ─────────────────────────────────────────────
-# AI 업종 분석 기반 경쟁사 도출 
-# ─────────────────────────────────────────────
 def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: str,
-                          market_scope: str, model_gpt: str, n_competitors: int = 5,
-                          confirmed_industry: str = "") -> list[dict]:
+                          market_scope: str, model_gpt: str, n_competitors: int = 5) -> list[dict]:
     brand    = biz_info.get("brand_name", extract_domain(target_url))
-    industry = confirmed_industry.strip() if confirmed_industry.strip() else biz_info.get("industry", "디지털 서비스")
-    product  = biz_info.get("core_product", "서비스")
-    audience = biz_info.get("target_audience", "일반 사용자")
+    industry = biz_info.get("industry", "디지털 서비스")
     domain   = extract_domain(target_url)
 
     scope_instruction = (
         "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요. 해외 기업은 제외합니다."
-        if "국내" in market_scope
-        else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요. 국내외 무관하게 선정합니다."
+        if "국내" in market_scope else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요."
     )
 
     search_context = fetch_competitor_search_context(industry, brand, market_scope)
-    search_context_section = f"""
-[실제 검색 데이터 — 이 데이터를 최우선 근거로 활용하세요]
-{search_context if search_context else "(검색 결과 없음 — AI 자체 지식으로 판단)"}
-""" if search_context else "[검색 데이터: 없음 — AI 자체 지식으로 판단]"
-
     prompt = f"""당신은 디지털 마케팅 업계 전문 애널리스트입니다.
-아래 검색 데이터와 브랜드 정보를 바탕으로 실제 직접 경쟁사를 도출하고, 각 항목을 논리적으로 검증하세요.
+아래 데이터를 바탕으로 실제 경쟁사를 분석하세요.
+[도메인]: {domain} / [업종]: {industry} / [브랜드]: {brand}
+[검색 결과]\n{search_context[:3000]}
 
-[분석 대상]
-- 브랜드명: {brand}
-- 도메인: {domain}
-- 업종: {industry}
-- 핵심 서비스: {product}
-
-{search_context_section}
-
-[경쟁사 도출 기준]
-1. 위 검색 데이터에 실제로 등장하는 브랜드를 최우선 선정
-2. {brand} 고객이 이탈할 경우 선택할 가능성이 가장 높은 서비스 우선
-3. {scope_instruction}
-
-[출력 형식 — JSON 배열만]
-[
-  {{
-    "rank": 1,
-    "brand_name": "브랜드명",
-    "domain": "실제도메인.com",
-    "reason": "경쟁 이유 25자 이내",
-    "domain_valid": true,
-    "is_direct_competitor": true
-  }},
-  ...
-]
-검증을 통과한 경쟁사 {n_competitors}개를 rank 순으로 출력하세요."""
-
+[출력 형식 - 순수 JSON 배열만 출력]
+[{{ "rank": 1, "brand_name": "A사", "domain": "a.com", "reason": "경쟁 이유", "domain_valid": true, "is_direct_competitor": true }}]
+조건: {scope_instruction} 본인 도메인은 제외. 정확히 {n_competitors}개 도출.
+"""
     result_str = ""
     try:
         if client_gpt:
-            result_str = call_gpt(client_gpt, prompt, max_tokens=1200, model=model_gpt, temperature_override=0.2)
+            result_str = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt, temperature_override=0.2)
         elif client_gemini:
-            result_str = call_gemini(client_gemini, prompt, max_tokens=1200, temperature_override=0.2)
+            result_str = call_gemini(client_gemini, prompt, max_tokens=1000, temperature_override=0.2)
     except Exception:
         pass
 
@@ -455,37 +480,82 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
         json_match = re.search(r'\[.*\]', result_str, re.DOTALL)
         if json_match:
             raw = json.loads(json_match.group())
-            competitors = [
-                c for c in raw
-                if c.get("domain_valid", True) and c.get("is_direct_competitor", True)
-                and c.get("domain", "").strip() and "competitor" not in c.get("domain", "").lower()
-            ]
+            competitors = [c for c in raw if c.get("domain", "").strip() and "competitor" not in c.get("domain", "").lower()]
     except Exception:
         pass
 
     if not competitors:
-        competitors = [
-            {"rank": i+1, "brand_name": f"경쟁사 {i+1}", "domain": f"competitor{i+1}.com",
-             "reason": "동종 업계 경쟁사", "domain_valid": False, "is_direct_competitor": False}
-            for i in range(n_competitors)
-        ]
+        competitors = [{"rank": i+1, "brand_name": f"경쟁사 {i+1}", "domain": f"comp{i+1}.com", "reason": "업계 경쟁사", "domain_valid": False} for i in range(n_competitors)]
     return competitors[:n_competitors]
 
+def run_sov_simulation(client_gpt, client_gemini, question: str, target_url: str,
+                        competitor_list: list[dict], biz_info: dict, model_gpt: str, n: int = 30) -> dict:
+    all_urls = [target_url] + [normalize_url(c.get("domain", "")) for c in competitor_list if c.get("domain", "").strip()]
+    all_labels = [biz_info.get("brand_name", extract_domain(target_url))] + [c.get("brand_name", c.get("domain", "")) for c in competitor_list]
+
+    def _sim_one_brand(url: str, brand_variants: list[str]) -> dict:
+        gpt_hits, gem_hits, gpt_ran, gem_ran = 0, 0, False, False
+
+        def _gpt_batch():
+            h = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                futs = [ex.submit(call_gpt, client_gpt, f"질문: {question}\n\n답변:", max_tokens=150, model=model_gpt, temperature_override=0.5) for _ in range(n)]
+                for f in concurrent.futures.as_completed(futs):
+                    try:
+                        res = f.result(timeout=10)
+                        if any(v in res.lower() for v in brand_variants): h += 1
+                    except Exception: pass
+            return h
+
+        def _gem_batch():
+            h = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                futs = [ex.submit(call_gemini, client_gemini, f"질문: {question}\n\n답변:", max_tokens=150, temperature_override=0.5) for _ in range(n)]
+                for f in concurrent.futures.as_completed(futs):
+                    try:
+                        res = f.result(timeout=10)
+                        if any(v in res.lower() for v in brand_variants): h += 1
+                    except Exception: pass
+            return h
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f_gpt = ex.submit(_gpt_batch) if client_gpt else None
+            f_gem = ex.submit(_gem_batch) if client_gemini else None
+            if f_gpt:
+                try: gpt_hits = f_gpt.result(timeout=max(60, n*2)); gpt_ran = True
+                except Exception: pass
+            if f_gem:
+                try: gem_hits = f_gem.result(timeout=max(60, n*2)); gem_ran = True
+                except Exception: pass
+
+        gpt_rate = round(gpt_hits / n * 100, 1) if gpt_ran else None
+        gem_rate = round(gem_hits / n * 100, 1) if gem_ran else None
+        valid = [v for v in [gpt_rate, gem_rate] if v is not None]
+        avg = round(sum(valid) / max(1, len(valid)), 1) if valid else 0
+        ci_lo, ci_hi = calc_confidence_interval((gpt_hits if gpt_ran else 0) + (gem_hits if gem_ran else 0), (n if gpt_ran else 0) + (n if gem_ran else 0))
+        
+        return {"gpt_rate": gpt_rate, "gem_rate": gem_rate, "avg_rate": avg, "ci_lo": ci_lo, "ci_hi": ci_hi}
+
+    sov_results = []
+    for i, (url, label) in enumerate(zip(all_urls, all_labels)):
+        brand_biz = biz_info if i == 0 else {"brand_name": label, "industry": biz_info.get("industry", "")}
+        res = _sim_one_brand(url, build_brand_variants(url, brand_biz))
+        res.update({"label": label, "domain": extract_domain(url), "is_target": (i == 0)})
+        sov_results.append(res)
+    return sov_results
+
 # ─────────────────────────────────────────────
-# 심층 사이트 크롤링 — 비즈니스 실체 추출
+# 사이트 크롤링 및 비즈니스 분석
 # ─────────────────────────────────────────────
 class _MetaParser(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.title, self.description, self.og_title, self.og_description = "", "", "", ""
-        self._in_title = False
+        self.title, self.description, self.og_title, self.og_description, self._in_title = "", "", "", "", False
     def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
+        d = dict(attrs)
         if tag == "title": self._in_title = True
         if tag == "meta":
-            name = attrs_dict.get("name", "").lower()
-            prop = attrs_dict.get("property", "").lower()
-            content = attrs_dict.get("content", "")
+            name, prop, content = d.get("name", "").lower(), d.get("property", "").lower(), d.get("content", "")
             if name == "description": self.description = content
             elif prop == "og:title": self.og_title = content
             elif prop == "og:description": self.og_description = content
@@ -500,78 +570,45 @@ def crawl_site_metadata(url: str) -> dict:
         if resp.status_code == 200 and len(resp.text) > 200:
             lines = resp.text.strip().splitlines()
             title = next((line.lstrip("#").strip() for line in lines if line.strip().startswith("#")), lines[0][:100] if lines else "")
-            description = " ".join([line.strip() for line in lines if line.strip() and not line.strip().startswith("#")][:5])
-            return {"title": title, "description": description[:500], "html_snippet": resp.text[:6000], "crawl_ok": True}
-    except Exception:
-        pass
+            desc = " ".join([line.strip() for line in lines if line.strip() and not line.strip().startswith("#")][:5])
+            return {"title": title, "description": desc[:500], "html_snippet": resp.text[:6000], "crawl_ok": True}
+    except Exception: pass
 
     try:
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10, allow_redirects=True)
         resp.encoding = resp.apparent_encoding or "utf-8"
-        html = resp.text[:80_000]
-        if len(html) > 500 and "자동등록방지" not in html:
-            parser = _MetaParser()
-            parser.feed(html)
-            return {
-                "title": parser.og_title or parser.title or "",
-                "description": parser.og_description or parser.description or "",
-                "html_snippet": html[:4000], "crawl_ok": True
-            }
-    except Exception:
-        pass
+        if len(resp.text) > 500 and "자동등록방지" not in resp.text:
+            p = _MetaParser(); p.feed(resp.text[:80000])
+            return {"title": p.og_title or p.title or "", "description": p.og_description or p.description or "", "html_snippet": resp.text[:4000], "crawl_ok": True}
+    except Exception: pass
     return {"title": "", "description": "", "html_snippet": "", "crawl_ok": False}
 
 def analyze_business_identity(client_gpt, client_gemini, url: str, model_gpt: str, model_gemini) -> dict:
-    meta        = crawl_site_metadata(url)
-    domain      = extract_domain(url)
+    meta = crawl_site_metadata(url)
+    domain = extract_domain(url)
     domain_stem = domain.split(".")[0]
 
-    prompt = f"""당신은 비즈니스 인텔리전스 전문가입니다.
-아래 웹사이트 정보를 바탕으로 업종과 서비스를 정확하게 분석하세요.
-
+    prompt = f"""당신은 비즈니스 인텔리전스 전문가입니다. 사이트를 정밀 분석하세요.
 [도메인]: {domain}
-[크롤링]: {meta.get('title', '(없음)')} / {meta.get('description', '(없음)')}
+[크롤링]: {meta.get('title', '')} / {meta.get('description', '')}
 
-[중요 지침 - 반드시 지킬 것]
-- 만약 크롤링된 본문에 글자가 거의 없고 정보가 부족하다면(예: 이미지 위주의 프랜차이즈 사이트), 오직 도메인명({domain})과 당신의 사전 지식을 총동원하여 이 브랜드가 현실에서 어떤 비즈니스를 하는 유명한 업체인지 추론하세요.
-  (예시: avahair.co.kr 이면 "에이바헤어", "미용실 프랜차이즈, 헤어살롱" 으로 파악해야 합니다.)
-- 업종(industry)은 "{domain_stem} 관련 서비스" 같은 모호한 단어를 절대 쓰지 말고, 실물 비즈니스명으로 적으세요.
-- brand_name은 도메인이 아닌 실제 한글 회사명/브랜드명을 우선으로 적으세요.
-
-다른 텍스트나 설명 없이 순수한 JSON 형식으로만 출력하세요:
-{{
-  "brand_name": "실제 브랜드명 또는 회사명",
-  "industry": "구체적 업종 (예: 미용실 프랜차이즈, 광고대행사)",
-  "industry_category": "대분류",
-  "core_product": "핵심 서비스/상품 한 문장",
-  "target_audience": "주요 타겟 고객층",
-  "key_services": ["서비스1", "서비스2"]
-}}"""
+[지침]
+크롤링 데이터가 없어도 도메인명({domain})과 사전 지식으로 어떤 비즈니스를 하는지 명확한 업종명을 추론하세요. (예: avahair.co.kr -> 미용실 프랜차이즈)
+JSON만 출력: {{"brand_name":"회사명", "industry":"실물 업종명", "industry_category":"대분류", "core_product":"핵심 서비스", "target_audience":"타겟층", "key_services":["A", "B"]}}"""
 
     result_str = ""
     try:
-        if client_gpt:
-            result_str = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt, temperature_override=0.2)
-        elif client_gemini:
-            result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature_override=0.2)
+        if client_gpt: result_str = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt, temperature_override=0.2)
+        elif client_gemini: result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature_override=0.2)
         
-        json_match = re.search(r'\{.*\}', result_str, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception:
-        pass
+        m = re.search(r'\{.*\}', result_str, re.DOTALL)
+        if m: return json.loads(m.group())
+    except Exception: pass
 
-    return {
-        "brand_name": domain_stem.upper(),
-        "industry": "브랜드 서비스",
-        "industry_category": "기타",
-        "core_product": "핵심 서비스",
-        "target_audience": "잠재 고객층",
-        "key_services": [],
-    }
+    return {"brand_name": domain_stem.upper(), "industry": "비즈니스 서비스", "industry_category": "기타", "core_product": "서비스", "target_audience": "고객", "key_services": []}
 
 # ─────────────────────────────────────────────
-# API 호출 기본 함수
+# API 호출
 # ─────────────────────────────────────────────
 def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", max_tokens: int = 1500, temperature_override: float = 0.7) -> str:
     messages = [{"role": "system", "content": system}] if system else []
@@ -584,80 +621,49 @@ def call_gemini(model_obj, prompt: str, max_tokens: int = 1500, temperature_over
     return res.text.strip()
 
 # ─────────────────────────────────────────────
-# AI 타겟 질문 생성 — 비즈니스 전환형 (심층 분석 기반)
+# 질문 생성 & 시뮬레이션
 # ─────────────────────────────────────────────
-def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
-                               model_gpt: str, model_gemini,
-                               biz_info: dict = None, manual_brand: str = "") -> list[str]:
-    brand    = manual_brand.strip() if manual_brand.strip() else biz_info.get("brand_name", extract_domain(url))
+def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, model_gpt: str, model_gemini, biz_info: dict = None) -> list[str]:
+    brand = biz_info.get("brand_name", extract_domain(url))
     industry = biz_info.get("industry", "서비스")
-    product  = biz_info.get("core_product", "서비스")
-    audience = biz_info.get("target_audience", "잠재 고객")
+    product = biz_info.get("core_product", "서비스")
 
-    prompt = f"""당신은 {industry} 분야의 10년 경력 마케팅 전략가입니다.
+    prompt = f"""당신은 {industry} 분야 마케터입니다.
+{brand}({product})의 실제 고객이 챗봇에 입력할 매우 구체적이고 현실적인 구매 여정 질문 5개를 창의적으로 도출하세요.
+뻔한 템플릿 질문 금지. 업계 실무 용어 및 구체적 상황을 포함하세요. 
+질문 안에 '{brand}'를 포함.
+다른 텍스트 없이 질문 5개만 한 줄씩 물음표로 끝나게 출력하세요."""
 
-[분석 대상 브랜드]
-- 브랜드명: {brand}
-- 업종: {industry}
-- 핵심 서비스: {product}
-- 주요 타겟: {audience}
-
-[생성 지침 - 템플릿 사용 절대 금지]
-- 뻔한 양식("~차별점은 무엇인가요?", "~장단점은?")을 절대 쓰지 마세요.
-- 위에서 분석된 **업종 맥락({industry})과 핵심 서비스({product})를 100% 반영**하여, 실제 고객이 지식인이나 AI에게 물어볼 법한 **구체적이고 현실적인 타겟 질문 5개**를 창의적으로 도출하세요.
-- 예시 1 (미용실 프랜차이즈): "{brand}에서 손상모 복구펌을 하려고 하는데, 기장 추가 비용이나 실제 유지 기간이 어떻게 되나요?"
-- 예시 2 (광고대행사): "{brand}에 메타 퍼포먼스 광고를 맡겼을 때 대행 수수료율과 최소 집행 예산 기준이 어떻게 되나요?"
-- 질문 안에 한글 브랜드명 '{brand}'를 자연스럽게 넣으세요.
-
-다른 설명이나 기호 없이 **오직 질문 5개만 한 줄씩 출력**하세요. 반드시 물음표(?)로 끝나야 합니다.
-"""
-    result = ""
+    res = ""
     try:
-        if engine == "GPT" and client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt, temperature_override=0.8)
-        elif engine == "Gemini" and client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=1000, temperature_override=0.8)
-        elif client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt, temperature_override=0.8)
-        elif client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=1000, temperature_override=0.8)
-    except Exception:
-        pass
+        if engine == "GPT" and client_gpt: res = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt, temperature_override=0.8)
+        elif engine == "Gemini" and client_gemini: res = call_gemini(client_gemini, prompt, max_tokens=800, temperature_override=0.8)
+        elif client_gpt: res = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt, temperature_override=0.8)
+        elif client_gemini: res = call_gemini(client_gemini, prompt, max_tokens=800, temperature_override=0.8)
+    except Exception: pass
 
-    lines = [ln.strip() for ln in result.split("\n") if ln.strip()]
-    questions = [re.sub(r'^[\d\.\-\*\[\]\s]+', '', q).strip() for q in lines if '?' in q]
-    questions = [q for q in questions if len(q) > 5][:5]
+    qs = [re.sub(r'^[\d\.\-\*\[\]\s]+', '', q).strip() for q in res.split('\n') if '?' in q]
+    qs = [q for q in qs if len(q) > 5][:5]
+    
+    if not qs:
+        qs = [f"{brand}의 {industry} 주요 서비스 특징은 무엇인가요?", f"{brand} 이용 시 비용 구조는 어떤가요?", f"{brand}의 실제 사용 후기는 어떤가요?"]
+    return qs[:5]
 
-    if not questions:
-        questions = [
-            f"{brand}의 {industry} 관련 주요 서비스와 특징은 무엇인가요?",
-            f"고객들이 {brand}를 선택하는 핵심 이유는 무엇인가요?",
-            f"{brand} 이용 시 예상되는 비용이나 수수료 구조는 어떤가요?"
-        ]
-    return questions[:5]
-
-
-# ─────────────────────────────────────────────
-# 시뮬레이션 엔진 (병렬 처리 고도화)
-# ─────────────────────────────────────────────
-def simulate_single_gpt(client, question: str, target_url: str, model: str, brand_variants: list[str]) -> dict:
+def simulate_single_gpt(client, question: str, url: str, model: str, bv: list) -> dict:
     try:
         res = call_gpt(client, f"질문: {question}\n\n답변:", max_tokens=150, model=model, temperature_override=0.5)
-        cited = any(v.lower() in res.lower() for v in brand_variants)
+        cited = any(v.lower() in res.lower() for v in bv)
         return {"cited": cited, "response_sample": res[:200] if cited else ""}
-    except Exception:
-        return {"cited": False, "response_sample": ""}
+    except Exception: return {"cited": False, "response_sample": ""}
 
-def simulate_single_gemini(model_obj, question: str, target_url: str, brand_variants: list[str]) -> dict:
+def simulate_single_gemini(model_obj, question: str, url: str, bv: list) -> dict:
     try:
         res = call_gemini(model_obj, f"질문: {question}\n\n답변:", max_tokens=150, temperature_override=0.5)
-        cited = any(v.lower() in res.lower() for v in brand_variants)
+        cited = any(v.lower() in res.lower() for v in bv)
         return {"cited": cited, "response_sample": res[:200] if cited else ""}
-    except Exception:
-        return {"cited": False, "response_sample": ""}
+    except Exception: return {"cited": False, "response_sample": ""}
 
-def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
-                   model_gpt: str, model_gemini, n: int = 50, biz_info: dict = None, progress_callback=None) -> dict:
+def run_simulation(client_gpt, client_gemini, question: str, target_url: str, model_gpt: str, model_gemini, n: int = 50, biz_info: dict = None, progress_callback=None) -> dict:
     bv = build_brand_variants(target_url, biz_info or {})
     gpt_h, gem_h, gpt_r, gem_r = 0, 0, False, False
     g_samp, m_samp = [], []
@@ -695,10 +701,10 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
         if progress_callback: progress_callback(0.5)
         
         if f_gpt:
-            try: gpt_h, g_samp = f_gpt.result(timeout=max(120, n*3)); gpt_r = True
+            try: gpt_h, g_samp = f_gpt.result(timeout=max(120, n*2)); gpt_r = True
             except Exception: pass
         if f_gem:
-            try: gem_h, m_samp = f_gem.result(timeout=max(120, n*3)); gem_r = True
+            try: gem_h, m_samp = f_gem.result(timeout=max(120, n*2)); gem_r = True
             except Exception: pass
 
     if progress_callback: progress_callback(1.0)
@@ -722,28 +728,9 @@ def run_all_simulations(client_gpt, client_gemini, questions: list[str], target_
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(questions), 5)) as executor:
         fmap = {executor.submit(run_simulation, client_gpt, client_gemini, q, target_url, model_gpt, model_gemini, n, biz_info): i for i, q in enumerate(questions)}
         for f in concurrent.futures.as_completed(fmap):
-            try:
-                results[fmap[f]] = f.result(timeout=max(120, n * 3))
-            except Exception:
-                results[fmap[f]] = {"gpt_rate": None, "gemini_rate": None, "avg_rate": 0, "gpt_hits": 0, "gemini_hits": 0, "total": n, "gpt_ci": (None, None), "gemini_ci": (None, None), "gpt_samples": [], "gemini_samples": []}
+            try: results[fmap[f]] = f.result(timeout=max(120, n * 3))
+            except Exception: results[fmap[f]] = {"gpt_rate": None, "gemini_rate": None, "avg_rate": 0, "gpt_hits": 0, "gemini_hits": 0, "total": n, "gpt_ci": (None, None), "gemini_ci": (None, None), "gpt_samples": [], "gemini_samples": []}
     return results
-
-def run_sov_simulation(client_gpt, client_gemini, question: str, target_url: str,
-                        competitor_list: list[dict], biz_info: dict, model_gpt: str, n: int = 30) -> dict:
-    all_urls = [target_url] + [normalize_url(c.get("domain", "")) for c in competitor_list if c.get("domain", "").strip()]
-    all_labels = [biz_info.get("brand_name", extract_domain(target_url))] + [c.get("brand_name", c.get("domain", "")) for c in competitor_list]
-
-    sov_results = []
-    for i, (url, label) in enumerate(zip(all_urls, all_labels)):
-        brand_biz = biz_info if i == 0 else {"brand_name": label, "industry": biz_info.get("industry", "")}
-        res = run_simulation(client_gpt, client_gemini, question, url, model_gpt, None, n, brand_biz)
-        res["label"] = label
-        res["domain"] = extract_domain(url)
-        res["is_target"] = (i == 0)
-        sov_results.append(res)
-
-    return sov_results
-
 
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini, biz_info: dict = None, market_scope: str = "글로벌") -> dict:
@@ -751,53 +738,55 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
     scope_instruction = "대한민국에서 서비스하는 국내 기업만 포함하세요." if "국내" in market_scope else "국내외 글로벌 기업을 모두 포함하세요."
 
     sys_msg = "완성된 문장으로 마침표(.)로 끝맺으세요."
-    p_comp = f"질문: '{question}' 에 AI가 인용할 상위 10개 경쟁사 도메인 배열로 출력. {scope_instruction}\n형식: [{{\"rank\": 1, \"domain\": \"a.com\", \"brand_name\": \"A사\", \"reason\": \"이유\", \"position\": \"업계1위\"}}]"
-    p_diag = f"[{brand}]이 질문 '{question}'에서 AI 인용 점유율이 낮은 이유를 분석하세요. 경쟁사 대비 콘텐츠·구조 문제점 3가지 (항목당 한 줄)"
-    p_kw = f"[{brand}]({industry}) 사이트에서 AI 인용 확률이 높을 블루오션 틈새 질문/키워드 5개 추천 (한 줄에 하나)"
-    p_geo = f"[{domain}]이 질문 '{question}'에서 AI에게 잘 인용되도록 홈페이지 개선 방안 3가지 (번호 포함, 2줄 이내)"
+    p_comp = f"질문: '{question}' 에 답변할 때 AI가 인용할 상위 10개 경쟁사 도메인을 분석하세요.\n조건: {scope_instruction}\n출력: [{{\"rank\":1, \"domain\":\"a.com\", \"brand_name\":\"A사\", \"reason\":\"이유\"}}]"
+    p_diag = f"[{brand}]이 질문 '{question}'에서 AI 인용 점유율이 낮은 이유를 분석. 문제점 3가지 (번호 없이 한 줄씩)"
+    p_kw = f"[{brand}]({industry}) 사이트에서 AI 인용 확률이 높을 블루오션 틈새 질문/키워드 5개 추천 (한 줄씩)"
+    p_geo = f"[{domain}]이 질문 '{question}'에서 잘 인용되도록 홈페이지 구조/문구 개선 방안 3가지 (번호 포함)"
 
     def _call(p):
         try:
-            if client_gpt: return call_gpt(client_gpt, p, system=sys_msg, model=model_gpt)
-            if client_gemini: return call_gemini(client_gemini, p)
+            if client_gpt: return call_gpt(client_gpt, p, system=sys_msg, model=model_gpt, max_tokens=800)
+            if client_gemini: return call_gemini(client_gemini, p, max_tokens=800)
         except Exception: pass
         return ""
 
-    comp_res = _call(p_comp)
-    competitors = []
+    comps = []
     try:
-        m = re.search(r'\[.*\]', comp_res, re.DOTALL)
-        if m: competitors = json.loads(m.group())
+        m = re.search(r'\[.*\]', _call(p_comp), re.DOTALL)
+        if m: comps = json.loads(m.group())
     except Exception: pass
 
     return {
-        "competitors": competitors,
+        "competitors": comps,
         "diagnoses": [d.strip().lstrip("•-*") for d in _call(p_diag).split("\n") if d.strip()][:3],
         "keywords": [k.strip().lstrip("•-*1234567890. ") for k in _call(p_kw).split("\n") if k.strip()][:5],
         "geo_guides": [g.strip() for g in re.split(r'\n(?=\d+\.)', _call(p_geo)) if g.strip()][:3],
     }
 
 # ─────────────────────────────────────────────
-# 렌더링 UI (다크/라이트 모드 대응 CSS 변수 사용)
+# 렌더링 UI
 # ─────────────────────────────────────────────
 def render_bar_chart(results: list[dict], questions: list[str], title: str):
     if not results: return
     short_questions = [q[:18] + "…" if len(q) > 20 else q for q in questions]
 
     fig = go.Figure()
+    _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
+    _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
+
     if any(r.get("gpt_rate") is not None for r in results):
         y_vals = [r.get("gpt_rate") or 0 for r in results]
-        fig.add_trace(go.Bar(name="GPT", x=short_questions, y=y_vals, marker=dict(color="#111111", line=dict(color="#000000", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_plot_text, family="Plus Jakarta Sans")))
+        fig.add_trace(go.Bar(name="GPT", x=short_questions, y=y_vals, marker=dict(color="#111111" if not _dark else "#E0E0E0", line=dict(color="#000000", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
     if any(r.get("gemini_rate") is not None for r in results):
         y_vals = [r.get("gemini_rate") or 0 for r in results]
-        fig.add_trace(go.Bar(name="Gemini", x=short_questions, y=y_vals, marker=dict(color="#888888", line=dict(color="#666666", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_plot_text, family="Plus Jakarta Sans")))
+        fig.add_trace(go.Bar(name="Gemini", x=short_questions, y=y_vals, marker=dict(color="#888888", line=dict(color="#666666", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
 
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color=_plot_text, family="Plus Jakarta Sans"), x=0),
+        title=dict(text=title, font=dict(size=16, color=_color_text, family="Plus Jakarta Sans"), x=0),
         barmode="group", bargap=0.25, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Plus Jakarta Sans", color=_plot_text),
-        xaxis=dict(tickfont=dict(size=11), gridcolor=_plot_grid, title=""),
-        yaxis=dict(title="인용 점유율 (%)", ticksuffix="%", gridcolor=_plot_grid),
+        font=dict(family="Plus Jakarta Sans", color=_color_text),
+        xaxis=dict(tickfont=dict(size=11), gridcolor=_color_grid, title=""),
+        yaxis=dict(title="인용 점유율 (%)", ticksuffix="%", gridcolor=_color_grid),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
         margin=dict(t=60, b=40, l=50, r=20), height=380,
     )
@@ -807,15 +796,18 @@ def render_sov_chart(sov_results: list[dict], title: str):
     if not sov_results: return
     labels = [r["label"] for r in sov_results]
     avgs = [r.get("avg_rate", 0) for r in sov_results]
-    colors = ["#111111" if r.get("is_target") else "#AAAAAA" for r in sov_results]
+    _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
+    _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
 
-    fig = go.Figure(go.Bar(x=avgs, y=labels, orientation="h", marker_color=colors, text=[f"{v:.1f}%" for v in avgs], textposition="outside", textfont=dict(size=12, color=_plot_text)))
+    colors = ["#111111" if not _dark else "#E0E0E0" if r.get("is_target") else "#AAAAAA" for r in sov_results]
+
+    fig = go.Figure(go.Bar(x=avgs, y=labels, orientation="h", marker_color=colors, text=[f"{v:.1f}%" for v in avgs], textposition="outside", textfont=dict(size=12, color=_color_text)))
     fig.update_layout(
-        title=dict(text=title, font=dict(size=15, color=_plot_text), x=0),
-        xaxis=dict(title="평균 AI 인용률 (%)", ticksuffix="%", gridcolor=_plot_grid),
+        title=dict(text=title, font=dict(size=15, color=_color_text), x=0),
+        xaxis=dict(title="평균 AI 인용률 (%)", ticksuffix="%", gridcolor=_color_grid),
         yaxis=dict(autorange="reversed", tickfont=dict(size=12)),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Plus Jakarta Sans", color=_plot_text),
+        font=dict(family="Plus Jakarta Sans", color=_color_text),
         margin=dict(t=55, b=40, l=120, r=60), height=max(300, len(sov_results) * 55 + 100),
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -827,8 +819,7 @@ def render_strategy_analysis(strategy: dict, target_url: str):
     domain = extract_domain(target_url)
 
     st.markdown("""
-    <div style="background:var(--bg2);border:1px solid var(--border);
-    border-radius:14px;padding:16px 20px;margin:16px 0;">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px 20px;margin:16px 0;">
     <span style="font-size:1rem;font-weight:700;color:var(--text);">📊 전략 분석 — 경쟁사 현황 및 GEO 최적화 가이드</span>
     </div>
     """, unsafe_allow_html=True)
@@ -894,10 +885,8 @@ with st.sidebar:
     _mode_label = "☀️ 라이트 모드로 전환" if _dark else "🌙 다크 모드로 전환"
     if st.button(_mode_label, key="btn_darkmode", use_container_width=True):
         st.session_state["dark_mode"] = not st.session_state["dark_mode"]
-        try:
-            st.rerun()
-        except AttributeError:
-            st.experimental_rerun()
+        try: st.rerun()
+        except AttributeError: st.experimental_rerun()
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     openai_key  = st.text_input("OpenAI API Key", type="password", placeholder="sk-...",   key="openai_key")
@@ -923,12 +912,8 @@ with st.sidebar:
     gemini_ok = bool(gemini_key and len(gemini_key) > 10)
 
     col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        if gpt_ok: st.markdown("🟢 **GPT** 연결됨")
-        else: st.markdown("⚪ **GPT** 미입력")
-    with col_s2:
-        if gemini_ok: st.markdown("🟢 **Gemini** 연결됨")
-        else: st.markdown("🔴 **Gemini** 미연결")
+    with col_s1: st.markdown("🟢 **GPT** 연결됨" if gpt_ok else "⚪ **GPT** 미입력")
+    with col_s2: st.markdown("🟢 **Gemini** 연결됨" if gemini_ok else "🔴 **Gemini** 미연결")
 
     if st.button("▶ 데모 시뮬레이션 실행", key="btn_demo_sidebar", use_container_width=True):
         st.session_state["run_demo"] = True
@@ -944,6 +929,8 @@ def get_clients():
             cgem = genai.GenerativeModel(gemini_model_name)
         except Exception: pass
     return cgpt, cgem
+
+client_gpt, client_gemini = get_clients()
 
 # ─────────────────────────────────────────────
 # 메인 화면
@@ -964,14 +951,12 @@ with col_m4: st.metric("데모 모드", "ON" if st.session_state.get("run_demo",
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 tab1, tab2, tab3 = st.tabs(["🤖 자동 분석형 (AI 질문 도출)", "✏️ 수동 분석형 (키워드 직접 입력)", "📅 AI 인용 히스토리"])
 
-client_gpt, client_gemini = get_clients()
-
 # ─────────────────────────────────────────────
 # Tab 1: 자동 분석형
 # ─────────────────────────────────────────────
 with tab1:
     st.markdown("""
-    <div class="result-card" style="background:var(--bg2);border-color:var(--border);">
+    <div class="result-card" style="background:var(--card);border-color:var(--border);">
         <h4 style="color:var(--text);margin-bottom:6px;">🤖 AI 타겟 질문 자동 도출 방식</h4>
         <p style="color:var(--text-muted);font-size:0.88rem;margin:0;line-height:1.6;">
         사이트 URL을 입력하면 AI가 해당 사이트가 인용될 가능성이 가장 높은 질문 5개를 스스로 생성하고,<br>
@@ -1060,7 +1045,7 @@ with tab1:
 # ─────────────────────────────────────────────
 with tab2:
     st.markdown("""
-    <div class="result-card" style="background:var(--bg2);border-color:var(--border);">
+    <div class="result-card" style="background:var(--card);border-color:var(--border);">
         <h4 style="color:var(--text);margin-bottom:6px;">✏️ 직접 키워드/질문 입력 방식</h4>
         <p style="color:var(--text-muted);font-size:0.88rem;margin:0;line-height:1.6;">
         분석하고 싶은 키워드나 질문을 직접 입력하고 제출하면 양 엔진에서 동시 시뮬레이션을 수행합니다.
@@ -1069,10 +1054,10 @@ with tab2:
     """, unsafe_allow_html=True)
 
     c_m1, c_m2 = st.columns(2)
-    url_manual = c_m1.text_input("🌐 사이트 URL", key="url_manual")
-    kw_manual = c_m2.text_input("🔍 메인 키워드 / 질문", key="kw_manual")
+    url_manual = c_m1.text_input("🌐 사이트 URL", key="m_url")
+    kw_manual = c_m2.text_input("🔍 메인 키워드 / 질문", key="m_kw")
     
-    if st.button("🔬 수동 분석 시작", use_container_width=True):
+    if st.button("🔬 수동 검증 시작", use_container_width=True):
         if url_manual and kw_manual and (gpt_ok or gemini_ok):
             t_url = normalize_url(url_manual)
             with st.spinner("비즈니스 분석 및 시뮬레이션 중..."):
