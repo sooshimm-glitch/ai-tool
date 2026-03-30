@@ -4,3 +4,4 @@ openai
 plotly
 pandas
 python-dotenv
+python-docx
