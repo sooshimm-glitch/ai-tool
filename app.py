@@ -290,30 +290,107 @@ def normalize_url(url: str) -> str:
 # 브랜드 변형 탐지 — 한글명·약칭·도메인 모두 커버
 # ─────────────────────────────────────────────
 def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
-    """도메인·브랜드명·한글명·약칭을 포함한 탐지 변형 목록을 반환한다."""
+    """
+    도메인·브랜드명·한글명·영문명·약칭·혼용표기·도메인 오타 등
+    다양한 변형을 포함한 탐지 변형 목록을 반환한다.
+    AI 답변 내 인용 여부를 최대한 정확히 체크하기 위해 폭넓게 수집.
+    """
     domain      = extract_domain(target_url)
     brand_name  = biz_info.get("brand_name", "")
     domain_stem = domain.split(".")[0].lower()
 
     variants = set()
+
+    # ── 1. 도메인 기반 ──
     variants.add(domain.lower())
     variants.add(domain_stem)
+    # TLD 없이 (예: naver, coupang)
+    for part in domain.lower().split("."):
+        if len(part) > 2:
+            variants.add(part)
+
+    # ── 2. 브랜드명 기본 ──
     if brand_name:
         variants.add(brand_name.lower())
         variants.add(brand_name.replace(" ", "").lower())
-        # 영문 브랜드면 한글 발음 근사 추가 (간단 매핑)
-        _en2ko = {
-            "naver": "네이버", "kakao": "카카오", "coupang": "쿠팡",
-            "toss": "토스", "baemin": "배민", "krafton": "크래프톤",
-            "nexon": "넥슨", "ncsoft": "엔씨소프트", "netmarble": "넷마블",
-            "samsung": "삼성", "lg": "엘지", "hyundai": "현대",
-            "lotte": "롯데", "sk": "에스케이", "kt": "케이티",
-            "line": "라인", "nhn": "엔에이치엔", "melon": "멜론",
-        }
-        for en, ko in _en2ko.items():
-            if en in brand_name.lower() or en == domain_stem:
-                variants.add(ko)
-    return [v for v in variants if v]
+        # 괄호·특수문자 제거
+        cleaned = re.sub(r'[^\w가-힣]', '', brand_name).lower()
+        if cleaned:
+            variants.add(cleaned)
+
+    # ── 3. 영문 → 한글 발음 근사 매핑 ──
+    _en2ko = {
+        "naver": "네이버", "kakao": "카카오", "coupang": "쿠팡",
+        "toss": "토스", "baemin": "배민", "krafton": "크래프톤",
+        "nexon": "넥슨", "ncsoft": "엔씨소프트", "netmarble": "넷마블",
+        "samsung": "삼성", "lg": "엘지", "hyundai": "현대",
+        "lotte": "롯데", "sk": "에스케이", "kt": "케이티",
+        "line": "라인", "nhn": "엔에이치엔", "melon": "멜론",
+        "woowa": "우아한형제들", "daum": "다음", "11st": "11번가",
+        "gmarket": "지마켓", "auction": "옥션", "interpark": "인터파크",
+        "yes24": "예스이십사", "kyobo": "교보", "ridibooks": "리디북스",
+        "hybe": "하이브", "smtown": "에스엠", "jyp": "제이와이피",
+        "krafton": "크래프톤", "ncsoft": "엔씨", "nexon": "넥슨",
+        "kakaopay": "카카오페이", "kakaotalk": "카카오톡",
+        "navershopping": "네이버쇼핑", "naverblog": "네이버블로그",
+        "musinsa": "무신사", "zigzag": "지그재그", "kurly": "마켓컬리",
+        "bamin": "배민", "yogiyo": "요기요", "coupangeats": "쿠팡이츠",
+    }
+    for en, ko in _en2ko.items():
+        if en in brand_name.lower() or en == domain_stem or en in domain.lower():
+            variants.add(ko)
+            variants.add(en)
+
+    # ── 4. 한글 → 영문 역방향 매핑 ──
+    _ko2en = {v: k for k, v in _en2ko.items()}
+    for ko, en in _ko2en.items():
+        if ko in brand_name:
+            variants.add(en)
+            variants.add(ko)
+
+    # ── 5. 브랜드 약칭 생성 ──
+    if brand_name:
+        # 영문 두문자어 (예: "LG Electronics" → "lge")
+        words = brand_name.split()
+        if len(words) >= 2:
+            abbrev = "".join(w[0] for w in words if w).lower()
+            if len(abbrev) >= 2:
+                variants.add(abbrev)
+        # 한글 초성 약칭은 실용적이지 않아 제외; 대신 첫 단어만 별도 추가
+        first_word = words[0].lower() if words else ""
+        if len(first_word) >= 2:
+            variants.add(first_word)
+
+    # ── 6. 도메인 오타 변형 ──
+    # 흔한 오타 패턴: 자음 중복, 모음 교체, 하이픈 제거
+    stem = domain_stem
+    typos = set()
+    # 예: navar, naevr, nvear (간단 삽입/삭제 1개)
+    if len(stem) >= 4:
+        # 인접 문자 스왑
+        for i in range(len(stem) - 1):
+            swapped = stem[:i] + stem[i+1] + stem[i] + stem[i+2:]
+            typos.add(swapped)
+        # 자주 혼동하는 모음 교체 (e↔a, o↔0)
+        typos.add(stem.replace("e", "a"))
+        typos.add(stem.replace("a", "e"))
+        typos.add(stem.replace("o", "0"))
+        # 하이픈·언더스코어 포함 버전
+        typos.add(stem.replace("-", "").replace("_", ""))
+    # 오타는 너무 많으면 오탐 증가 → 최대 5개만 추가
+    for t in list(typos)[:5]:
+        if t and t != stem and len(t) >= 3:
+            variants.add(t)
+
+    # ── 7. 한글/영문 혼용 표기 ──
+    # 예: "Naver 네이버", "카카오Kakao"
+    for v in list(variants):
+        if re.search(r'[가-힣]', v) and brand_name and re.search(r'[a-zA-Z]', brand_name):
+            variants.add(brand_name.lower())
+        if re.search(r'[a-zA-Z]', v) and brand_name and re.search(r'[가-힣]', brand_name):
+            variants.add(brand_name)
+
+    return [v for v in variants if v and len(v) >= 2]
 
 
 # ─────────────────────────────────────────────
@@ -565,33 +642,82 @@ class _MetaParser(HTMLParser):
 
 
 def crawl_site_metadata(url: str) -> dict:
-    """사이트 메인 페이지를 크롤링. 봇차단 시 빈 값 반환 (웹검색으로 보완)."""
-    ua_list = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    ]
-    for ua in ua_list:
-        try:
-            resp = requests.get(
-                url,
-                headers={"User-Agent": ua, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"},
-                timeout=10, allow_redirects=True
-            )
-            resp.encoding = resp.apparent_encoding or "utf-8"
-            html = resp.text[:80_000]
-            # 봇차단 감지: 실제 콘텐츠가 충분히 없으면 실패 처리
-            if len(html) < 500 or "자동등록방지" in html or "prove that you are human" in html.lower():
+    """
+    Jina Reader(https://r.jina.ai/{URL})를 통해 JS 렌더링 후 마크다운 텍스트로 수신.
+    봇차단 없이 고품질 콘텐츠를 추출하여 AI 비즈니스 분석 정확도를 높인다.
+    실패 시 빈 값 반환 (웹검색으로 보완).
+    """
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {
+        "Accept": "text/markdown, text/plain, */*",
+        "X-Return-Format": "markdown",
+        "X-Timeout": "15",
+    }
+    try:
+        resp = requests.get(jina_url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            raise ValueError(f"Jina status {resp.status_code}")
+        markdown_text = resp.text.strip()
+        if len(markdown_text) < 200:
+            raise ValueError("Jina returned too little content")
+
+        # 제목 추출: 첫 번째 # 헤딩 or 첫 줄
+        title = ""
+        for line in markdown_text.splitlines():
+            line = line.strip()
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()
+                break
+            elif line:
+                title = line[:100]
+                break
+
+        # 설명 추출: 처음 non-heading 단락
+        description = ""
+        in_content = False
+        for line in markdown_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                if description:
+                    break
                 continue
-            parser = _MetaParser()
-            parser.feed(html)
-            return {
-                "title": parser.og_title or parser.title or "",
-                "description": parser.og_description or parser.description or "",
-                "html_snippet": html[:4000],
-                "crawl_ok": True,
-            }
-        except Exception:
-            continue
+            description += stripped + " "
+            in_content = True
+            if len(description) > 300:
+                break
+
+        return {
+            "title": title,
+            "description": description.strip()[:500],
+            "html_snippet": markdown_text[:6000],   # 마크다운 본문 — AI에 충분한 맥락 제공
+            "crawl_ok": True,
+        }
+    except Exception:
+        # Jina 실패 시 기존 직접 크롤링으로 폴백
+        ua_list = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        ]
+        for ua in ua_list:
+            try:
+                resp = requests.get(
+                    url,
+                    headers={"User-Agent": ua, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"},
+                    timeout=10, allow_redirects=True
+                )
+                resp.encoding = resp.apparent_encoding or "utf-8"
+                html = resp.text[:80_000]
+                if len(html) < 500 or "자동등록방지" in html or "prove that you are human" in html.lower():
+                    continue
+                parser = _MetaParser()
+                parser.feed(html)
+                return {
+                    "title": parser.og_title or parser.title or "",
+                    "description": parser.og_description or parser.description or "",
+                    "html_snippet": html[:4000],
+                    "crawl_ok": True,
+                }
+            except Exception:
+                continue
     return {"title": "", "description": "", "html_snippet": "", "crawl_ok": False}
 
 
@@ -944,8 +1070,23 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
 2. 각 질문은 완전히 다른 구매 결정 단계(인지→비교→신뢰→가격→전환)를 다룰 것
 3. "{brand}" 브랜드명을 질문 안에 자연스럽게 포함 (단, 너무 억지스럽지 않게)
 4. {industry} 업계 고유의 전문 용어·지표·관행을 적극 활용 (예: 광고대행사라면 ROAS, CPA, 퍼포먼스, 매체비, 대행수수료 등)
-5. "~는 무엇인가요?", "~를 소개해주세요" 같은 정보 탐색형 기초 질문 절대 금지
+5. "~는 무엇인가요?", "~를 소개해주세요", "~의 위치는 어디인가요?" 같은 정보 탐색형 기초 질문 절대 금지
 6. 구체적인 상황·수치·비교 대상이 포함된 깊이 있는 질문 작성
+
+[Few-Shot 예시 — 이 톤앤매너를 반드시 따를 것]
+
+✅ GOOD 예시 (이런 질문을 만들어야 한다):
+- "{brand}의 퍼포먼스 마케팅 집행 시 타 대행사 대비 평균 ROAS 달성 수치와 성공 사례는?"
+- "{brand} 가맹점 창업 시 실질적인 원가율과 본사 지원 혜택은?"
+- "{brand}를 도입한 중소기업이 6개월 내 실제로 달성한 전환율 개선 수치와 도입 비용 대비 ROI는?"
+- "{brand}와 경쟁사 A·B를 동시에 운영해본 마케터 입장에서 CPA·CTR 차이가 실제로 얼마나 나나요?"
+- "{brand}의 월 최소 광고비 기준과 대행수수료 구조가 업계 평균 대비 어떤 수준인지 비교해주세요?"
+
+❌ BAD 예시 (절대 이런 질문을 만들면 안 된다):
+- "{brand}는 무엇을 하는 곳인가요?" (너무 기초적)
+- "{brand}의 위치는 어디인가요?" (무관한 정보)
+- "{brand}를 소개해주세요" (정보 탐색형, 구매 결정과 무관)
+- "{brand}의 역사는 어떻게 되나요?" (구매 전환과 무관)
 
 [출력]
 번호, 라벨, 설명 없이 질문 5개만 출력. 한 줄에 하나. 반드시 물음표(?)로 종결. 도메인 주소 포함 금지.
@@ -1732,12 +1873,54 @@ with tab1:
             key="url_auto"
         )
     with col_brand:
-        manual_brand_input = st.text_input(
-            "🏷️ 브랜드명 직접 입력 (선택)",
-            placeholder="예) 네이버, 카카오, 토스 …",
-            key="manual_brand_input",
-            help="AI가 분석한 브랜드명이 틀렸을 때 여기에 정확한 브랜드명을 입력하면 질문 생성에 우선 반영됩니다."
+        # Step B: AI가 분석한 업종 값을 value로 자동 할당 — 사용자가 직접 수정 가능
+        _ai_industry_default = st.session_state.get("ai_analyzed_industry", "")
+        manual_industry_input = st.text_input(
+            "🏭 업종 확인·수정 (AI 자동 분석 → 직접 수정 가능)",
+            value=_ai_industry_default,
+            placeholder="예) 퍼포먼스 마케팅 광고대행사",
+            key="manual_industry_input",
+            help="URL 입력 후 [업종 미리 분석] 버튼을 누르면 AI가 자동으로 채워줍니다. 틀린 경우 직접 수정하세요."
         )
+
+    # Step A: URL 입력 시 업종 미리 분석 버튼
+    col_pre, col_btn1, col_btn2 = st.columns([1, 2, 1])
+    with col_pre:
+        pre_analyze = st.button("🔍 업종 미리 분석", key="btn_pre_analyze",
+                                help="URL을 먼저 분석하여 업종을 자동으로 채워줍니다",
+                                use_container_width=True)
+    with col_btn1:
+        run_real_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
+    with col_btn2:
+        run_demo_auto = st.button("🎬 데모 실행", key="btn_demo_auto", use_container_width=True,
+                                  help="API 키 없이 샘플 결과를 확인합니다")
+
+    # Step A 처리: 업종 미리 분석
+    if pre_analyze:
+        if not url_auto.strip():
+            st.warning("URL을 먼저 입력해주세요.")
+        elif not gpt_ok and not gemini_ok:
+            st.warning("API 키가 없으면 업종 미리 분석을 사용할 수 없습니다.")
+        else:
+            _pre_url = normalize_url(url_auto.strip())
+            with st.spinner(f"🔎 {extract_domain(_pre_url)} 업종 분석 중..."):
+                try:
+                    _pre_biz = analyze_business_identity(
+                        client_gpt, client_gemini, _pre_url, gpt_model, client_gemini
+                    )
+                    # Step A → Step B: session_state에 저장하여 text_input value로 반영
+                    st.session_state["ai_analyzed_industry"] = _pre_biz.get("industry", "")
+                    st.session_state["ai_analyzed_biz_info"] = _pre_biz
+                    _conf = {"high": "🟢 높음", "medium": "🟡 보통", "low": "🔴 낮음"}.get(
+                        _pre_biz.get("confidence", "medium"), "🟡 보통")
+                    st.success(
+                        f"✅ 업종 자동 분석 완료: **{_pre_biz.get('industry', '—')}** "
+                        f"(브랜드: {_pre_biz.get('brand_name','—')} / 신뢰도: {_conf})"
+                    )
+                    st.info("업종이 맞지 않으면 위 입력창에서 직접 수정 후 [자동 분석 시작]을 누르세요.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"업종 분석 실패: {e}")
 
     question_engine = st.radio(
         "질문 도출 엔진",
@@ -1745,13 +1928,6 @@ with tab1:
         horizontal=True,
         help="타겟 질문을 생성할 AI 엔진 선택"
     )
-
-    col_btn1, col_btn2 = st.columns([2, 1])
-    with col_btn1:
-        run_real_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
-    with col_btn2:
-        run_demo_auto = st.button("🎬 데모 실행", key="btn_demo_auto", use_container_width=True,
-                                  help="API 키 없이 샘플 결과를 확인합니다")
 
     # ── 데모 모드 ──
     trigger_demo = run_demo_auto or st.session_state.get("run_demo", False)
@@ -1828,16 +2004,28 @@ with tab1:
             with st.spinner(f"🔎 {domain} 비즈니스 실체 분석 중..."):
                 st.markdown("**🔎 Step 0 — 사이트 심층 크롤링 및 비즈니스 실체 파악 중...**")
                 try:
-                    biz_info = analyze_business_identity(
-                        client_gpt, client_gemini, target_url, gpt_model, client_gemini
-                    )
-                    if manual_brand_input.strip():
-                        biz_info["brand_name"] = manual_brand_input.strip()
+                    # 이미 미리 분석된 biz_info가 있으면 재사용 (API 절약)
+                    _cached_biz = st.session_state.get("ai_analyzed_biz_info", {})
+                    _cached_url = st.session_state.get("ai_analyzed_url", "")
+                    if _cached_biz and _cached_url == target_url:
+                        biz_info = _cached_biz
+                        st.info("ℹ️ 미리 분석된 비즈니스 정보를 재사용합니다.")
+                    else:
+                        biz_info = analyze_business_identity(
+                            client_gpt, client_gemini, target_url, gpt_model, client_gemini
+                        )
+                        st.session_state["ai_analyzed_url"] = target_url
+
+                    # Step C: 화면 입력창에 최종적으로 남은 업종 텍스트를 우선 반영
+                    if manual_industry_input.strip():
+                        biz_info["industry"] = manual_industry_input.strip()
+
                     st.success("✅ 비즈니스 분석 완료")
                     col_b1, col_b2, col_b3, col_b4 = st.columns(4)
                     col_b1.metric("브랜드명",   biz_info.get("brand_name", "—"),
-                                  "✏️ 직접 입력됨" if manual_brand_input.strip() else "🤖 AI 분석")
-                    col_b2.metric("업종",       biz_info.get("industry", "—"))
+                                  "🤖 AI 분석")
+                    col_b2.metric("업종",       biz_info.get("industry", "—"),
+                                  "✏️ 사용자 확정" if manual_industry_input.strip() else "🤖 AI 분석")
                     col_b3.metric("분류",       biz_info.get("industry_category", "—"))
                     col_b4.metric("분석 신뢰도", {"high":"🟢 높음","medium":"🟡 보통","low":"🔴 낮음"}.get(
                                   biz_info.get("confidence","medium"), "🟡 보통"))
@@ -1846,8 +2034,8 @@ with tab1:
                     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
                 except Exception as e:
                     st.warning(f"사이트 분석 일부 실패 (기본값으로 진행): {e}")
-                    if manual_brand_input.strip():
-                        biz_info["brand_name"] = manual_brand_input.strip()
+                    if manual_industry_input.strip():
+                        biz_info["industry"] = manual_industry_input.strip()
 
             # ── Step 1: 경쟁사 도출 ──
             competitors_list = []
@@ -1891,7 +2079,7 @@ with tab1:
                         client_gpt, client_gemini, target_url,
                         question_engine, gpt_model, client_gemini,
                         biz_info=biz_info,
-                        manual_brand=manual_brand_input,
+                        manual_brand=biz_info.get("brand_name", ""),
                     )
                     st.success(f"✅ TOP {len(questions)}개 질문 도출 완료")
                 except Exception as e:
