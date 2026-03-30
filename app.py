@@ -41,7 +41,7 @@ if "dark_mode" not in st.session_state:
 _dark = st.session_state["dark_mode"]
 
 # ─────────────────────────────────────────────
-# 글로벌 CSS — 다크/라이트 모드 통합 (글자 묻힘 완벽 해결)
+# 글로벌 CSS — 다크/라이트 모드 통합
 # ─────────────────────────────────────────────
 if _dark:
     _bg        = "#0F0F0F"
@@ -84,7 +84,7 @@ else:
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('[https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap)');
 
 :root {{
     --bg:         {_bg};
@@ -302,7 +302,7 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
     return round(lo, 1), round(hi, 1)
 
 # ─────────────────────────────────────────────
-# 데모 데이터 생성
+# 데모 데이터 생성 (보고용)
 # ─────────────────────────────────────────────
 DEMO_SCENARIOS = {
     "naver.com": {
@@ -414,7 +414,7 @@ def fetch_competitor_search_context(industry: str, brand: str, market_scope: str
     headers = {"Accept": "text/markdown, text/plain, */*", "X-Return-Format": "markdown", "X-Timeout": "10"}
     for q in queries:
         try:
-            search_url = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(q)}&hl=ko"
+            search_url = f"[https://r.jina.ai/https://www.google.com/search?q=](https://r.jina.ai/https://www.google.com/search?q=){requests.utils.quote(q)}&hl=ko"
             resp = requests.get(search_url, headers=headers, timeout=15)
             if resp.status_code == 200 and len(resp.text) > 300:
                 collected.append(f"[검색: {q}]\n{resp.text[:3000]}")
@@ -427,7 +427,12 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
     brand    = biz_info.get("brand_name", extract_domain(target_url))
     industry = biz_info.get("industry", "디지털 서비스")
     domain   = extract_domain(target_url)
-    scope_instruction = "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요." if "국내" in market_scope else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요."
+
+    scope_instruction = (
+        "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요. 해외 기업은 제외합니다."
+        if "국내" in market_scope else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요."
+    )
+
     search_context = fetch_competitor_search_context(industry, brand, market_scope)
     prompt = f"""당신은 디지털 마케팅 업계 전문 애널리스트입니다.
 아래 데이터를 바탕으로 실제 경쟁사를 분석하세요.
@@ -437,6 +442,7 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
 [출력 형식 - 순수 JSON 배열만 출력]
 [{{ "rank": 1, "brand_name": "A사", "domain": "a.com", "reason": "경쟁 이유", "domain_valid": true, "is_direct_competitor": true }}]
 조건: {scope_instruction} 본인 도메인은 제외. 정확히 {n_competitors}개 도출.
+절대 추가 설명이나 마크다운 기호(```json 등)를 붙이지 마세요. 오직 JSON 배열만 출력하세요.
 """
     result_str = ""
     try:
@@ -448,9 +454,12 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
 
     competitors = []
     try:
-        json_match = re.search(r'\[.*\]', result_str, re.DOTALL)
-        if json_match:
-            raw = json.loads(json_match.group())
+        # [핵심 버그 수정] AI가 이상한 말을 덧붙여도 딱 배열 [ ] 만 가져오도록 방탄 처리
+        start_idx = result_str.find('[')
+        end_idx = result_str.rfind(']')
+        if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+            clean_json = result_str[start_idx:end_idx+1]
+            raw = json.loads(clean_json)
             competitors = [c for c in raw if c.get("domain", "").strip() and "competitor" not in c.get("domain", "").lower()]
     except Exception: pass
 
@@ -563,8 +572,12 @@ JSON만 출력: {{"brand_name":"회사명", "industry":"실물 업종명", "indu
     try:
         if client_gpt: res = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt, temperature_override=0.2)
         elif client_gemini: res = call_gemini(client_gemini, prompt, max_tokens=600, temperature_override=0.2)
-        m = re.search(r'\{.*\}', res, re.DOTALL)
-        if m: return json.loads(m.group())
+        
+        # [핵심 버그 수정] 방탄 JSON 파싱
+        s = res.find('{')
+        e = res.rfind('}')
+        if s != -1 and e != -1 and s < e:
+            return json.loads(res[s:e+1])
     except Exception: pass
     return {"brand_name": domain_stem.upper(), "industry": "비즈니스 서비스", "industry_category": "기타", "core_product": "서비스", "target_audience": "고객", "key_services": []}
 
@@ -691,7 +704,7 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
     scope_instruction = "대한민국에서 서비스하는 국내 기업만 포함하세요." if "국내" in market_scope else "국내외 글로벌 기업을 모두 포함하세요."
 
     sys_msg = "완성된 문장으로 마침표(.)로 끝맺으세요."
-    p_comp = f"질문: '{question}' 에 답변할 때 AI가 인용할 상위 10개 경쟁사 도메인을 분석하세요.\n조건: {scope_instruction}\n출력: [{{\"rank\":1, \"domain\":\"a.com\", \"brand_name\":\"A사\", \"reason\":\"이유\"}}]"
+    p_comp = f"질문: '{question}' 에 답변할 때 AI가 인용할 상위 10개 경쟁사 도메인을 분석하세요.\n조건: {scope_instruction}\n출력: [{{\"rank\":1, \"domain\":\"a.com\", \"brand_name\":\"A사\", \"reason\":\"이유\"}}]\n절대 마크다운을 쓰지 말고 순수 JSON 배열만 출력하세요."
     p_diag = f"[{brand}]이 질문 '{question}'에서 AI 인용 점유율이 낮은 이유를 분석. 문제점 3가지 (번호 없이 한 줄씩)"
     p_kw = f"[{brand}]({industry}) 사이트에서 AI 인용 확률이 높을 블루오션 틈새 질문/키워드 5개 추천 (한 줄씩)"
     p_geo = f"[{domain}]이 질문 '{question}'에서 잘 인용되도록 홈페이지 구조/문구 개선 방안 3가지 (번호 포함)"
@@ -716,8 +729,11 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
     comps = []
     try:
-        m = re.search(r'\[.*\]', c_res, re.DOTALL)
-        if m: comps = json.loads(m.group())
+        # [핵심 버그 수정] 방탄 JSON 파싱
+        s = c_res.find('[')
+        e = c_res.rfind(']')
+        if s != -1 and e != -1 and s < e:
+            comps = json.loads(c_res[s:e+1])
     except Exception: pass
 
     return {
@@ -976,6 +992,7 @@ with tab1:
             if st.session_state.get("industry_display"):
                 biz_info["industry"] = st.session_state["industry_display"]
 
+            # [핵심 버그 수정] 자동 분석 탭에서도 market_scope 와 n_competitors 를 넘기도록 수정
             with st.spinner("타겟 질문 도출 중..."):
                 questions = generate_target_questions(client_gpt, client_gemini, target_url, question_engine, gpt_model, client_gemini, biz_info=biz_info)
             
@@ -1005,7 +1022,7 @@ with tab1:
                         render_strategy_analysis(strat, target_url)
 
 # ─────────────────────────────────────────────
-# Tab 2: 수동 분석형 [속도 병목 완벽 해결]
+# Tab 2: 수동 분석형 
 # ─────────────────────────────────────────────
 with tab2:
     st.markdown("""
@@ -1039,7 +1056,6 @@ with tab2:
             
             st.markdown(f"**분석 대상:** `{extract_domain(t_url)}` | **키워드:** {len(all_kws)}개 | **범위:** {market_scope}")
 
-            # [수동 분석 병렬 처리 적용] - 여러 키워드를 한 번에 시뮬레이션
             with st.spinner(f"⚡ 키워드 {len(all_kws)}개 병렬 시뮬레이션 중... ({sim_count}회)"):
                 all_res = run_all_simulations(client_gpt, client_gemini, all_kws, t_url, gpt_model, client_gemini, sim_count, biz)
             
@@ -1050,7 +1066,6 @@ with tab2:
                 sov = run_sov_simulation(client_gpt, client_gemini, kw_manual, t_url, comps, biz, gpt_model, max(10, sim_count//3))
                 render_sov_chart(sov, f"[{market_scope}] 경쟁사 대비 SOV")
             
-            # 결과 요약 표
             table_data = []
             for kw, r in zip(all_kws, all_res):
                 valid = [v for v in [r.get('gpt_rate'), r.get('gemini_rate')] if v is not None]
