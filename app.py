@@ -32,130 +32,154 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
 # ─────────────────────────────────────────────
-# 글로벌 CSS (화이트/라이트 블루 세련된 디자인)
+# 다크/라이트 모드 상태 초기화
 # ─────────────────────────────────────────────
-st.markdown("""
+if "dark_mode" not in st.session_state:
+    st.session_state["dark_mode"] = False
+
+_dark = st.session_state["dark_mode"]
+
+# ─────────────────────────────────────────────
+# 글로벌 CSS — 다크/라이트 모드 통합
+# ─────────────────────────────────────────────
+if _dark:
+    _bg        = "#0F0F0F"
+    _bg2       = "#1A1A1A"
+    _card      = "#1E1E1E"
+    _border    = "#333333"
+    _text      = "#F0F0F0"
+    _text_muted= "#999999"
+    _primary   = "#E0E0E0"
+    _accent    = "#AAAAAA"
+    _shadow    = "0 4px 24px rgba(0,0,0,0.5)"
+    _shadow_h  = "0 8px 40px rgba(0,0,0,0.7)"
+    _header_gr = "linear-gradient(135deg,#1A1A1A 0%,#2A2A2A 60%,#3A3A3A 100%)"
+    _sidebar_gr= "linear-gradient(180deg,#0F0F0F 0%,#1A1A1A 50%,#222222 100%)"
+    _metric_bg = "#252525"
+    _input_bg  = "rgba(255,255,255,0.07)"
+    _input_bdr = "rgba(255,255,255,0.15)"
+    _tab_bg    = "#1E1E1E"
+    _tab_sel   = "#333333"
+    _progress  = "linear-gradient(90deg,#555555,#888888)"
+    _btn_gr    = "linear-gradient(135deg,#333333,#555555)"
+else:
+    _bg        = "#F5F5F5"
+    _bg2       = "#EEEEEE"
+    _card      = "#FFFFFF"
+    _border    = "#DDDDDD"
+    _text      = "#111111"
+    _text_muted= "#666666"
+    _primary   = "#111111"
+    _accent    = "#444444"
+    _shadow    = "0 4px 24px rgba(0,0,0,0.08)"
+    _shadow_h  = "0 8px 40px rgba(0,0,0,0.15)"
+    _header_gr = "linear-gradient(135deg,#111111 0%,#333333 60%,#555555 100%)"
+    _sidebar_gr= "linear-gradient(180deg,#111111 0%,#222222 50%,#333333 100%)"
+    _metric_bg = "#FFFFFF"
+    _input_bg  = "#FFFFFF"
+    _input_bdr = "#DDDDDD"
+    _tab_bg    = "#FFFFFF"
+    _tab_sel   = "#111111"
+    _progress  = "linear-gradient(90deg,#111111,#555555)"
+    _btn_gr    = "linear-gradient(135deg,#111111,#444444)"
+
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
-:root {
-    --primary: #111111;
-    --primary-light: #F0F0F0;
-    --primary-mid: #AAAAAA;
-    --accent: #444444;
-    --accent2: #666666;
-    --success: #222222;
-    --warning: #555555;
-    --danger: #333333;
-    --bg: #F5F5F5;
-    --card: #FFFFFF;
-    --border: #DDDDDD;
-    --text: #111111;
-    --text-muted: #666666;
-    --shadow: 0 4px 24px rgba(0,0,0,0.08);
-    --shadow-hover: 0 8px 40px rgba(0,0,0,0.15);
-}
+:root {{
+    --bg:         {_bg};
+    --bg2:        {_bg2};
+    --card:       {_card};
+    --border:     {_border};
+    --text:       {_text};
+    --text-muted: {_text_muted};
+    --primary:    {_primary};
+    --accent:     {_accent};
+    --shadow:     {_shadow};
+    --shadow-hover:{_shadow_h};
+}}
 
-html, body, [class*="css"] {
+html, body, [class*="css"] {{
     font-family: 'Plus Jakarta Sans', sans-serif;
     background-color: var(--bg) !important;
-}
+    color: var(--text) !important;
+}}
+.stApp {{ background: var(--bg) !important; }}
 
-.stApp {
-    background: #F5F5F5 !important;
-}
-
-.main-header {
-    background: linear-gradient(135deg, #111111 0%, #333333 60%, #555555 100%);
+/* ── 헤더 ── */
+.main-header {{
+    background: {_header_gr};
     border-radius: 20px;
     padding: 36px 40px;
     margin-bottom: 28px;
     position: relative;
     overflow: hidden;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.25);
-}
-.main-header::before {
-    content: '';
-    position: absolute;
-    top: -40px; right: -40px;
-    width: 220px; height: 220px;
-    background: rgba(255,255,255,0.07);
-    border-radius: 50%;
-}
-.main-header::after {
-    content: '';
-    position: absolute;
-    bottom: -60px; left: 20%;
-    width: 300px; height: 300px;
-    background: rgba(14,165,233,0.15);
-    border-radius: 50%;
-}
-.main-header h1 {
-    color: white !important;
-    font-size: 2rem !important;
-    font-weight: 800 !important;
-    margin: 0 !important;
-    position: relative; z-index: 1;
-    letter-spacing: -0.5px;
-}
-.main-header p {
-    color: rgba(255,255,255,0.82) !important;
-    font-size: 1rem !important;
-    margin: 8px 0 0 0 !important;
-    position: relative; z-index: 1;
-    font-weight: 400;
-}
+    box-shadow: {_shadow_h};
+}}
+.main-header::before {{
+    content:'';position:absolute;top:-40px;right:-40px;
+    width:220px;height:220px;
+    background:rgba(255,255,255,0.07);border-radius:50%;
+}}
+.main-header h1 {{ color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; position:relative; z-index:1; letter-spacing:-0.5px; }}
+.main-header p  {{ color:rgba(255,255,255,0.82) !important; font-size:1rem !important; margin:8px 0 0 0 !important; position:relative; z-index:1; }}
 
-.metric-card {
-    background: white;
+/* ── 카드 ── */
+.metric-card, .result-card {{
+    background: var(--card) !important;
     border-radius: 16px;
     padding: 22px 24px;
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
     transition: box-shadow 0.2s;
-}
-.metric-card:hover { box-shadow: var(--shadow-hover); }
+    color: var(--text);
+}}
+.result-card h4 {{ color: var(--text) !important; }}
 
-.stTabs [data-baseweb="tab-list"] {
-    background: white !important;
+/* ── 탭 ── */
+.stTabs [data-baseweb="tab-list"] {{
+    background: {_tab_bg} !important;
     border-radius: 14px !important;
     padding: 6px !important;
     border: 1px solid var(--border) !important;
     box-shadow: var(--shadow) !important;
-    gap: 4px !important;
-}
-.stTabs [data-baseweb="tab"] {
+}}
+.stTabs [data-baseweb="tab"] {{
     border-radius: 10px !important;
     font-weight: 600 !important;
     font-size: 0.9rem !important;
     color: var(--text-muted) !important;
     padding: 10px 22px !important;
-}
-.stTabs [aria-selected="true"] {
-    background: #111111 !important;
-    color: white !important;
+}}
+.stTabs [aria-selected="true"] {{
+    background: {_tab_sel} !important;
+    color: {"white" if not _dark else "#F0F0F0"} !important;
     box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
-}
+}}
 
+/* ── 인풋 ── */
 .stTextInput > div > div > input,
-.stTextArea > div > div > textarea {
+.stTextArea > div > div > textarea {{
     border-radius: 12px !important;
     border: 1.5px solid var(--border) !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 0.92rem !important;
-    transition: border-color 0.2s, box-shadow 0.2s !important;
-    background: white !important;
+    background: {_input_bg} !important;
     color: var(--text) !important;
-}
+    transition: border-color 0.2s, box-shadow 0.2s !important;
+}}
 .stTextInput > div > div > input:focus,
-.stTextArea > div > div > textarea:focus {
+.stTextArea > div > div > textarea:focus {{
     border-color: var(--primary) !important;
-    box-shadow: 0 0 0 3px rgba(0,0,0,0.10) !important;
-}
+    box-shadow: 0 0 0 3px rgba(128,128,128,0.15) !important;
+}}
 
-.stButton > button {
-    background: linear-gradient(135deg, #111111, #444444) !important;
+/* ── 버튼 ── */
+.stButton > button {{
+    background: {_btn_gr} !important;
     color: white !important;
     border: none !important;
     border-radius: 12px !important;
@@ -165,190 +189,84 @@ html, body, [class*="css"] {
     transition: all 0.2s !important;
     box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
-}
-.stButton > button:hover {
+}}
+.stButton > button:hover {{
     transform: translateY(-2px) !important;
     box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
-}
+}}
 
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #111111 0%, #222222 50%, #333333 100%) !important;
-}
-[data-testid="stSidebar"] * {
-    color: white !important;
-}
-[data-testid="stSidebar"] .stTextInput > div > div > input {
-    background: rgba(255,255,255,0.12) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
+/* ── 사이드바 ── */
+[data-testid="stSidebar"] {{
+    background: {_sidebar_gr} !important;
+}}
+[data-testid="stSidebar"] * {{ color: white !important; }}
+[data-testid="stSidebar"] .stTextInput > div > div > input {{
+    background: {_input_bg if _dark else 'rgba(255,255,255,0.12)'} !important;
+    border: 1px solid {_input_bdr if _dark else 'rgba(255,255,255,0.25)'} !important;
     color: white !important;
     border-radius: 10px !important;
-}
-[data-testid="stSidebar"] .stSelectbox > div > div {
+}}
+[data-testid="stSidebar"] .stSelectbox > div > div {{
     background: rgba(255,255,255,0.12) !important;
     border: 1px solid rgba(255,255,255,0.25) !important;
     border-radius: 10px !important;
-}
-[data-testid="stSidebar"] label {
+}}
+[data-testid="stSidebar"] label {{
     color: rgba(255,255,255,0.85) !important;
     font-size: 0.85rem !important;
     font-weight: 500 !important;
-}
+}}
 
-.stProgress > div > div > div {
-    background: linear-gradient(90deg, #111111, #555555) !important;
+/* ── 프로그레스 바 ── */
+.stProgress > div > div > div {{
+    background: {_progress} !important;
     border-radius: 8px !important;
-}
+}}
 
-.stSuccess {
-    background: rgba(16,185,129,0.08) !important;
-    border: 1px solid rgba(16,185,129,0.3) !important;
-    border-radius: 12px !important;
-}
-.stWarning {
-    background: rgba(245,158,11,0.08) !important;
-    border: 1px solid rgba(245,158,11,0.3) !important;
-    border-radius: 12px !important;
-}
-.stError {
-    background: rgba(239,68,68,0.08) !important;
-    border: 1px solid rgba(239,68,68,0.3) !important;
-    border-radius: 12px !important;
-}
-
-.result-card {
-    background: white;
-    border-radius: 16px;
-    padding: 24px;
-    border: 1px solid #E2E8F0;
-    box-shadow: 0 4px 24px rgba(37,99,235,0.07);
-    margin: 12px 0;
-}
-.result-card h4 {
-    color: #111111;
-    font-size: 0.95rem;
-    font-weight: 700;
-    margin-bottom: 8px;
-}
-
-.share-badge-high {
-    display: inline-block;
-    background: linear-gradient(135deg, #10B981, #059669);
-    color: white;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 700;
-}
-.share-badge-mid {
-    display: inline-block;
-    background: linear-gradient(135deg, #F59E0B, #D97706);
-    color: white;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 700;
-}
-.share-badge-low {
-    display: inline-block;
-    background: linear-gradient(135deg, #EF4444, #DC2626);
-    color: white;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 700;
-}
-
-.sidebar-logo {
-    text-align: center;
-    padding: 20px 0 24px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.15);
-    margin-bottom: 20px;
-}
-.sidebar-logo .logo-icon {
-    font-size: 2.5rem;
-    display: block;
-    margin-bottom: 8px;
-}
-.sidebar-logo h2 {
-    color: white !important;
-    font-size: 1.1rem !important;
-    font-weight: 800 !important;
-    margin: 0 !important;
-    letter-spacing: -0.3px;
-}
-.sidebar-logo p {
-    color: rgba(255,255,255,0.6) !important;
-    font-size: 0.75rem !important;
-    margin: 4px 0 0 0 !important;
-}
-
-.section-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 24px 0 16px 0;
-}
-.section-header .icon {
-    width: 36px; height: 36px;
-    background: linear-gradient(135deg, #EEEEEE, #E0E0E0);
-    border-radius: 10px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 1rem;
-}
-.section-header h3 {
-    color: #111111;
-    font-size: 1.05rem;
-    font-weight: 700;
-    margin: 0;
-}
-
-.custom-divider {
-    border: none;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, #CBD5E1, transparent);
-    margin: 24px 0;
-}
-
-.analyzing-banner {
-    background: linear-gradient(135deg, #F5F5F5, #EEEEEE);
-    border: 1px solid #CCCCCC;
-    border-radius: 14px;
-    padding: 18px 22px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 12px 0;
-}
-
-.competitor-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    border-radius: 10px;
-    margin: 6px 0;
-    background: #F8F8F8;
-    border: 1px solid #E2E8F0;
-}
-.rank-badge {
-    width: 28px; height: 28px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #111111, #444444);
-    color: white;
-    font-weight: 700;
-    font-size: 0.8rem;
-    display: flex; align-items: center; justify-content: center;
-}
-
-div[data-testid="metric-container"] {
-    background: white !important;
+/* ── 메트릭 ── */
+div[data-testid="metric-container"] {{
+    background: {_metric_bg} !important;
     border-radius: 14px !important;
     padding: 18px !important;
     border: 1px solid var(--border) !important;
     box-shadow: var(--shadow) !important;
-}
+}}
+div[data-testid="metric-container"] * {{ color: var(--text) !important; }}
+
+/* ── 배지 ── */
+.share-badge-high {{ display:inline-block; background:linear-gradient(135deg,#10B981,#059669); color:white; padding:4px 12px; border-radius:20px; font-size:0.85rem; font-weight:700; }}
+.share-badge-mid  {{ display:inline-block; background:linear-gradient(135deg,#F59E0B,#D97706); color:white; padding:4px 12px; border-radius:20px; font-size:0.85rem; font-weight:700; }}
+.share-badge-low  {{ display:inline-block; background:linear-gradient(135deg,#EF4444,#DC2626); color:white; padding:4px 12px; border-radius:20px; font-size:0.85rem; font-weight:700; }}
+
+/* ── 사이드바 로고 ── */
+.sidebar-logo {{ text-align:center; padding:20px 0 24px 0; border-bottom:1px solid rgba(255,255,255,0.15); margin-bottom:20px; }}
+.sidebar-logo .logo-icon {{ font-size:2.5rem; display:block; margin-bottom:8px; }}
+.sidebar-logo h2 {{ color:white !important; font-size:1.1rem !important; font-weight:800 !important; margin:0 !important; }}
+.sidebar-logo p  {{ color:rgba(255,255,255,0.6) !important; font-size:0.75rem !important; margin:4px 0 0 0 !important; }}
+
+/* ── 섹션 헤더 ── */
+.section-header {{ display:flex; align-items:center; gap:10px; margin:24px 0 16px 0; }}
+.section-header h3 {{ color:var(--text); font-size:1.05rem; font-weight:700; margin:0; }}
+
+/* ── 구분선 ── */
+.custom-divider {{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); margin:24px 0; }}
+
+/* ── 경쟁사 행 ── */
+.competitor-row {{ display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-radius:10px; margin:6px 0; background:var(--bg2); border:1px solid var(--border); }}
+
+/* ── 다크모드 추가 보완 ── */
+{"" if not _dark else """
+.stMarkdown, .stMarkdown p, .stMarkdown li { color: #E0E0E0 !important; }
+.stExpander { background: #1E1E1E !important; border-color: #333333 !important; }
+.stExpander summary { color: #E0E0E0 !important; }
+.stDataFrame { background: #1E1E1E !important; }
+[data-testid="stTable"] { background: #1E1E1E !important; }
+.stSelectbox > div > div { background: #252525 !important; border-color: #444 !important; color: #E0E0E0 !important; }
+.stSlider > div > div > div { background: #444 !important; }
+"""}
 </style>
 """, unsafe_allow_html=True)
+
 
 
 # ─────────────────────────────────────────────
@@ -647,75 +565,166 @@ class _MetaParser(HTMLParser):
 
 
 def crawl_site_metadata(url: str) -> dict:
-    """사이트 메인 페이지를 크롤링하여 메타 정보를 반환한다."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; CitationBot/1.0)",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        html = resp.text[:80_000]  # 앞 80KB만 파싱
-        parser = _MetaParser()
-        parser.feed(html)
-        return {
-            "title": parser.og_title or parser.title or "",
-            "description": parser.og_description or parser.description or "",
-            "html_snippet": html[:3000],  # AI 분석용 본문 앞부분
-        }
-    except Exception:
-        return {"title": "", "description": "", "html_snippet": ""}
+    """사이트 메인 페이지를 크롤링. 봇차단 시 빈 값 반환 (웹검색으로 보완)."""
+    ua_list = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    ]
+    for ua in ua_list:
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": ua, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"},
+                timeout=10, allow_redirects=True
+            )
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            html = resp.text[:80_000]
+            # 봇차단 감지: 실제 콘텐츠가 충분히 없으면 실패 처리
+            if len(html) < 500 or "자동등록방지" in html or "prove that you are human" in html.lower():
+                continue
+            parser = _MetaParser()
+            parser.feed(html)
+            return {
+                "title": parser.og_title or parser.title or "",
+                "description": parser.og_description or parser.description or "",
+                "html_snippet": html[:4000],
+                "crawl_ok": True,
+            }
+        except Exception:
+            continue
+    return {"title": "", "description": "", "html_snippet": "", "crawl_ok": False}
+
+
+def web_search_business_info(domain: str) -> str:
+    """
+    크롤링 실패 시 웹 검색으로 업종 정보를 보완한다.
+    requests로 검색 결과 스니펫을 가져와 텍스트로 반환.
+    """
+    queries = [
+        f"{domain} 회사 업종 서비스 소개",
+        f"site:{domain} OR \"{domain.split('.')[0]}\" 광고 마케팅 쇼핑 서비스",
+    ]
+    snippets = []
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+    for q in queries[:1]:
+        try:
+            # Bing 검색 결과 스크랩 (간이)
+            resp = requests.get(
+                "https://www.bing.com/search",
+                params={"q": q, "setlang": "ko"},
+                headers=headers, timeout=8
+            )
+            # 간단히 텍스트에서 스니펫 추출
+            text = re.sub(r'<[^>]+>', ' ', resp.text)
+            text = re.sub(r'\s+', ' ', text)
+            # 도메인 주변 200자 추출
+            idx = text.lower().find(domain.split(".")[0].lower())
+            if idx > 0:
+                snippets.append(text[max(0, idx-100):idx+400])
+        except Exception:
+            pass
+    return " ".join(snippets)[:2000]
 
 
 def analyze_business_identity(client_gpt, client_gemini, url: str,
                                model_gpt: str, model_gemini) -> dict:
-    """크롤링된 메타데이터를 AI로 분석하여 업종·상품·타겟·브랜드명을 추출한다."""
-    meta = crawl_site_metadata(url)
+    """
+    1단계: 크롤링 시도
+    2단계: 크롤링 실패 시 웹 검색으로 업종 정보 보완
+    3단계: AI로 업종·서비스·타겟·브랜드명 정밀 분석
+    → "디지털 서비스" 같은 포괄적 폴백 방지
+    """
+    meta   = crawl_site_metadata(url)
     domain = extract_domain(url)
+    domain_stem = domain.split(".")[0]
 
-    prompt = f"""아래는 웹사이트 {domain}의 메인 페이지 정보입니다.
+    # 크롤링 실패 또는 정보 부족 → 웹 검색으로 보완
+    web_context = ""
+    if not meta["crawl_ok"] or (not meta["title"] and not meta["description"]):
+        web_context = web_search_business_info(domain)
 
-[페이지 제목]
-{meta['title']}
+    prompt = f"""당신은 비즈니스 인텔리전스 전문가입니다.
+아래 웹사이트 정보를 바탕으로 업종과 서비스를 **정확하고 구체적으로** 분석하세요.
 
-[메타 설명]
-{meta['description']}
+[도메인]
+{domain}
 
-[본문 일부]
-{meta['html_snippet'][:1500]}
+[크롤링 데이터]
+제목: {meta.get('title', '(없음)')}
+설명: {meta.get('description', '(없음)')}
+본문: {meta.get('html_snippet', '')[:2000]}
 
-위 정보를 바탕으로 다음 항목을 분석하고 JSON으로만 출력하세요.
-다른 설명이나 마크다운 없이 JSON 객체만 반환하세요.
+[웹 검색 보완 정보]
+{web_context if web_context else '(없음)'}
 
+[분석 지침]
+- 업종은 반드시 실제 구체적인 카테고리로 작성 (예: "퍼포먼스 마케팅 광고대행사", "온라인 패션 쇼핑몰", "B2B SaaS 인사관리", "법률 플랫폼", "음식 배달 서비스")
+- "디지털 서비스", "IT 서비스", "온라인 서비스" 같은 포괄적이고 모호한 업종명 절대 금지
+- 정보가 부족해도 도메인명과 검색 맥락에서 추론하여 가장 그럴듯한 구체적 업종을 제시할 것
+- 광고/마케팅 관련 키워드(대행사, 퍼포먼스, IMC, 바이럴 등)가 있으면 반드시 광고대행사 계열로 분류
+- brand_name은 도메인이 아닌 실제 회사명/브랜드명 (한글 우선)
+
+다른 설명 없이 JSON만 출력:
 {{
-  "brand_name": "실제 한글 브랜드명 또는 서비스명 (도메인 주소 제외)",
-  "industry": "업종 카테고리 (예: B2B 마케팅 SaaS, 전자상거래, 법률 서비스, 음식 배달 등)",
-  "core_product": "핵심 상품 또는 서비스 (한 문장)",
-  "target_audience": "주요 타겟 고객층 (예: 중소기업 마케터, 20-30대 직장인 등)"
+  "brand_name": "실제 브랜드명 또는 회사명",
+  "industry": "구체적 업종 (예: 퍼포먼스 마케팅 광고대행사)",
+  "industry_category": "대분류 (예: 광고/마케팅, 이커머스, SaaS, 금융, 교육, 의료, 부동산, 제조, 물류 등)",
+  "core_product": "핵심 서비스/상품 한 문장",
+  "target_audience": "주요 타겟 고객층 (구체적으로)",
+  "key_services": ["서비스1", "서비스2", "서비스3"],
+  "confidence": "high/medium/low (정보 충분도)"
 }}"""
 
     result_str = ""
     try:
         if client_gpt:
-            result_str = call_gpt(client_gpt, prompt, max_tokens=400, model=model_gpt)
+            result_str = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt,
+                                   temperature_override=0.2)
         elif client_gemini:
-            result_str = call_gemini(client_gemini, prompt, max_tokens=400)
+            result_str = call_gemini(client_gemini, prompt, max_tokens=600,
+                                      temperature_override=0.2)
     except Exception:
         pass
 
     try:
         json_match = re.search(r'\{.*\}', result_str, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            parsed = json.loads(json_match.group())
+            # "디지털 서비스" 같은 포괄 업종이 나오면 재시도
+            industry = parsed.get("industry", "")
+            bad_industries = ["디지털 서비스", "IT 서비스", "온라인 서비스",
+                              "인터넷 서비스", "웹 서비스", "소프트웨어"]
+            if any(bad in industry for bad in bad_industries) and web_context:
+                # 웹 맥락으로 재분석
+                retry_prompt = f"""도메인 {domain}의 업종을 웹 검색 정보 기반으로 정확히 분류하세요.
+
+[검색 정보]
+{web_context}
+
+가장 구체적인 업종명을 JSON으로만 출력 (예: {{"industry": "퍼포먼스 마케팅 광고대행사"}}):"""
+                try:
+                    r2 = call_gpt(client_gpt, retry_prompt, max_tokens=100, model=model_gpt,
+                                   temperature_override=0.1) if client_gpt else \
+                         call_gemini(client_gemini, retry_prompt, max_tokens=100,
+                                      temperature_override=0.1)
+                    m2 = re.search(r'\{.*\}', r2, re.DOTALL)
+                    if m2:
+                        parsed["industry"] = json.loads(m2.group()).get("industry", industry)
+                except Exception:
+                    pass
+            return parsed
     except Exception:
         pass
 
-    # 폴백: 도메인 기반 기본값
+    # 폴백: 도메인 기반이지만 포괄 업종은 쓰지 않음
     return {
-        "brand_name": domain.split(".")[0].upper(),
-        "industry": "디지털 서비스",
+        "brand_name": domain_stem.upper(),
+        "industry": f"{domain_stem} 관련 서비스",
+        "industry_category": "기타",
         "core_product": f"{domain} 서비스",
-        "target_audience": "일반 사용자",
+        "target_audience": "잠재 고객",
+        "key_services": [],
+        "confidence": "low",
     }
 
 
@@ -882,88 +891,98 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
                                biz_info: dict = None,
                                manual_brand: str = "") -> list[str]:
     """
-    브랜드명·업종·서비스 정보를 바탕으로 AI가 자유롭게 판단하여
-    해당 브랜드와 업종에 가장 관련성 높은 고품질 질문 5개를 생성한다.
-    질문 유형은 고정하지 않고 AI가 맥락에 맞게 자율 결정한다.
+    업종을 정확히 파악한 biz_info 기반으로 실제 잠재고객이 AI에 입력할
+    고품질 질문 5개 생성. 업종별 전문 맥락을 최대한 반영.
     """
     if not biz_info:
         biz_info = {
             "brand_name": extract_domain(url).split(".")[0].upper(),
-            "industry": "디지털 서비스",
-            "core_product": "해당 서비스",
-            "target_audience": "일반 사용자",
+            "industry": "서비스",
+            "industry_category": "기타",
+            "core_product": "서비스",
+            "target_audience": "잠재 고객",
+            "key_services": [],
         }
 
-    # 사용자가 직접 입력한 브랜드명이 있으면 AI 분석값보다 우선 적용
     brand    = manual_brand.strip() if manual_brand.strip() else biz_info.get("brand_name", "해당 브랜드")
-    industry = biz_info.get("industry", "디지털 서비스")
+    industry = biz_info.get("industry", "서비스")
+    category = biz_info.get("industry_category", "")
     product  = biz_info.get("core_product", "서비스")
-    audience = biz_info.get("target_audience", "사용자")
-
+    audience = biz_info.get("target_audience", "잠재 고객")
+    services = biz_info.get("key_services", [])
+    services_str = ", ".join(services) if services else product
     domain_clean = extract_domain(url).replace("www.", "")
+    confidence = biz_info.get("confidence", "medium")
 
-    prompt = f"""당신은 10년 차 퍼포먼스 마케팅 전략 기획자이자 GEO(Generative Engine Optimization) 전문가입니다.
+    # 업종 카테고리별 맞춤 질문 각도 가이드
+    category_hints = {
+        "광고/마케팅": "광고주(중소기업 대표, 마케터)가 광고대행사를 선택할 때 실제로 묻는 질문 — 수익률(ROAS), 집행 매체, 성과 보고, 계약 조건, 업종 레퍼런스 위주",
+        "이커머스": "구매자 입장의 배송·가격·신뢰도·반품 관련 질문, 판매자 입장의 입점·수수료·마케팅 지원 질문",
+        "SaaS": "도입 전 데모·트라이얼·연동·보안·가격 플랜, 기존 솔루션 대비 전환 비용 관련 질문",
+        "금융": "금리·한도·수수료·안전성·가입 조건, 타 금융사 대비 실질 혜택 관련 질문",
+        "교육": "커리큘럼·강사·합격률·환불정책, 취업/자격증 연계 관련 질문",
+        "의료": "진료 과목·의사 경력·비용·예약, 타 병원 대비 전문성 관련 질문",
+        "부동산": "매물·가격·수수료·계약 절차, 지역 시세 및 투자 관련 질문",
+    }
+    angle_hint = category_hints.get(category, f"{industry} 분야에서 {audience}가 실제로 고민하는 핵심 질문")
 
-아래 브랜드·업종·서비스 정보를 완전히 숙지한 뒤, **실제로 이 브랜드를 검색하거나 도입을 고려하는 사람**이 ChatGPT, Gemini 같은 AI 챗봇에게 물어볼 가능성이 가장 높은 질문 5개를 생성하세요.
+    prompt = f"""당신은 {industry} 분야의 10년 경력 마케팅 전략가이자 GEO(Generative Engine Optimization) 전문가입니다.
 
-[브랜드 정보]
+[분석 대상 브랜드]
 - 브랜드명: {brand}
-- 업종: {industry}
-- 핵심 서비스/상품: {product}
-- 주요 타겟 고객: {audience}
-- 분석 도메인: {domain_clean}
+- 업종: {industry} ({category})
+- 핵심 서비스: {services_str}
+- 주요 타겟: {audience}
+- 도메인: {domain_clean}
+- 분석 신뢰도: {confidence}
 
-[질문 생성 전략 — 아래 5가지 각도에서 각 1개씩]
-1. **경쟁 비교형**: {industry} 시장에서 {brand}와 주요 경쟁사를 직접 비교하는 질문
-2. **도입/추천 검토형**: {audience}가 실제 도입·구매·사용을 고려할 때 나오는 실무적 질문
-3. **차별점/강점 탐색형**: {brand}만의 핵심 강점이나 타 서비스와 다른 이유를 묻는 질문
-4. **신뢰/후기 검증형**: {brand}의 실제 사용자 경험, 평점, 안전성, 공신력을 묻는 질문
-5. **비용/가성비 확인형**: {brand}의 가격 구조, 요금제, 비용 대비 효과를 묻는 질문
+[업종 맞춤 질문 방향]
+{angle_hint}
 
-[품질 기준]
-- "~는 무엇인가요?"처럼 단순 정의 묻는 초보적 질문 금지
-- 각 질문은 서로 완전히 다른 각도로 구성 (중복 관심사 금지)
-- 질문 안에 반드시 브랜드명 '{brand}'을 자연스럽게 포함
-- {industry} 업종 특유의 전문 용어·시장 맥락을 반영하여 현장감 있게 작성
-- 실제 사용자가 AI 챗봇에 입력할 법한 자연스러운 한국어 구어체
+[생성 규칙 — 반드시 준수]
+1. 실제 {audience}가 "{brand}"를 검색하거나 도입·계약·구매를 결정할 때 AI 챗봇에 입력하는 **현실적인 질문**만 생성
+2. 각 질문은 완전히 다른 구매 결정 단계(인지→비교→신뢰→가격→전환)를 다룰 것
+3. "{brand}" 브랜드명을 질문 안에 자연스럽게 포함 (단, 너무 억지스럽지 않게)
+4. {industry} 업계 고유의 전문 용어·지표·관행을 적극 활용 (예: 광고대행사라면 ROAS, CPA, 퍼포먼스, 매체비, 대행수수료 등)
+5. "~는 무엇인가요?", "~를 소개해주세요" 같은 정보 탐색형 기초 질문 절대 금지
+6. 구체적인 상황·수치·비교 대상이 포함된 깊이 있는 질문 작성
 
-[출력 규칙]
-- 도메인 주소(.com, .co.kr 등) 절대 포함 금지
-- 순수 한국어 문장만 작성
-- 번호·각도라벨·설명 없이 질문 5개만, 한 줄에 하나씩 출력
-- 모든 질문은 물음표(?)로 종결
+[출력]
+번호, 라벨, 설명 없이 질문 5개만 출력. 한 줄에 하나. 반드시 물음표(?)로 종결. 도메인 주소 포함 금지.
 
 질문 5개:"""
 
     result = ""
     try:
         if engine == "GPT" and client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt)
+            result = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt,
+                              temperature_override=0.8)
         elif engine == "Gemini" and client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=800)
+            result = call_gemini(client_gemini, prompt, max_tokens=1000,
+                                  temperature_override=0.8)
         elif client_gemini:
-            result = call_gemini(client_gemini, prompt, max_tokens=800)
+            result = call_gemini(client_gemini, prompt, max_tokens=1000,
+                                  temperature_override=0.8)
         elif client_gpt:
-            result = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt)
+            result = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt,
+                              temperature_override=0.8)
         else:
             raise RuntimeError("사용 가능한 API 클라이언트가 없습니다.")
     except Exception as e:
         raise RuntimeError(str(e))
 
-    # 파싱: 번호·기호 제거 후 물음표로 끝나는 줄만 수집
+    # 파싱
     lines = [ln.strip() for ln in result.split("\n") if ln.strip()]
     questions = []
     for ln in lines:
-        # 앞의 번호/불릿/유형라벨 제거
         clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
         clean = re.sub(r'^[-•*]\s*', '', clean)
-        # 유형 라벨(예: "[비교형]") 제거
         clean = re.sub(r'^\[.*?\]\s*', '', clean)
+        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean)
         clean = clean.strip()
-        if len(clean) > 8 and clean.endswith("?"):
+        if len(clean) > 10 and clean.endswith("?"):
             questions.append(clean)
 
-    # 물음표 없이 끝난 문장도 수용 (충분한 길이면 포함)
     if len(questions) < 3:
         questions = []
         for ln in lines:
@@ -971,22 +990,31 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
             clean = re.sub(r'^[-•*]\s*', '', clean)
             clean = re.sub(r'^\[.*?\]\s*', '', clean)
             clean = clean.strip()
-            if len(clean) > 10:
+            if len(clean) > 12:
                 if not clean.endswith("?"):
                     clean += "?"
                 questions.append(clean)
 
     questions = questions[:5]
 
-    # 최후 폴백: 브랜드+업종 기반 범용 질문
+    # 폴백 — 업종 맥락 반영
     if len(questions) < 3:
-        questions = [
-            f"{brand}은 {industry} 시장에서 경쟁 서비스 대비 어떤 점이 다른가요?",
-            f"{audience}가 {brand}를 실제로 도입한 뒤 얻는 가장 큰 변화는 무엇인가요?",
-            f"{brand}의 신뢰도와 실제 사용 후기는 어떻게 평가되나요?",
-            f"{brand}의 요금 구조와 가성비는 동종 업계 대비 어느 수준인가요?",
-            f"{industry} 분야에서 {brand}을 선택해야 하는 핵심 이유는 무엇인가요?",
+        ad_agency_questions = [
+            f"{brand}의 업종별 광고 집행 ROAS가 타 대행사 대비 어느 수준인가요?",
+            f"{audience}가 {brand}에 광고를 맡기기 전에 확인해야 할 계약 조건은?",
+            f"{brand}의 네이버·카카오·메타 공식 파트너 여부와 집행 가능한 매체 범위는?",
+            f"{industry}에서 {brand}를 쓰면 직접 운영 대비 대행수수료 구조가 어떻게 되나요?",
+            f"{brand}의 실제 광고주 성과 사례와 평균 CPA·CTR 수준은 어떻게 되나요?",
         ]
+        generic_questions = [
+            f"{brand}가 {industry} 시장에서 경쟁사 대비 실제로 다른 점은 무엇인가요?",
+            f"{audience}가 {brand}를 선택한 후 실제로 얻은 성과나 변화는?",
+            f"{brand}의 계약·이용 조건과 비용 구조가 동종 업계 대비 어떤 수준인가요?",
+            f"{brand}에 대한 실제 사용자 평가와 주요 불만 사항은?",
+            f"{industry} 분야에서 {brand}와 직접 비교되는 대안 서비스는 무엇인가요?",
+        ]
+        questions = ad_agency_questions if "광고" in industry or "마케팅" in industry else generic_questions
+
     return questions[:5]
 
 
@@ -1520,7 +1548,13 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("**🔑 API 키 설정**")
+    # ── 다크/라이트 모드 토글 ──
+    _mode_label = "☀️ 라이트 모드로 전환" if _dark else "🌙 다크 모드로 전환"
+    if st.button(_mode_label, key="btn_darkmode", use_container_width=True):
+        st.session_state["dark_mode"] = not st.session_state["dark_mode"]
+        st.rerun()
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     openai_key  = st.text_input("OpenAI API Key", type="password", placeholder="sk-...",   key="openai_key")
     gemini_key  = st.text_input("Gemini API Key", type="password", placeholder="AIza...", key="gemini_key")
 
@@ -1804,8 +1838,11 @@ with tab1:
                     col_b1.metric("브랜드명",   biz_info.get("brand_name", "—"),
                                   "✏️ 직접 입력됨" if manual_brand_input.strip() else "🤖 AI 분석")
                     col_b2.metric("업종",       biz_info.get("industry", "—"))
-                    col_b3.metric("핵심 서비스", biz_info.get("core_product", "—")[:20])
-                    col_b4.metric("타겟 고객",  biz_info.get("target_audience", "—")[:20])
+                    col_b3.metric("분류",       biz_info.get("industry_category", "—"))
+                    col_b4.metric("분석 신뢰도", {"high":"🟢 높음","medium":"🟡 보통","low":"🔴 낮음"}.get(
+                                  biz_info.get("confidence","medium"), "🟡 보통"))
+                    if biz_info.get("key_services"):
+                        st.caption("📋 주요 서비스: " + " · ".join(biz_info["key_services"][:5]))
                     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
                 except Exception as e:
                     st.warning(f"사이트 분석 일부 실패 (기본값으로 진행): {e}")
