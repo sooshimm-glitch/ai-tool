@@ -304,7 +304,6 @@ def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
     # ── 1. 도메인 기반 ──
     variants.add(domain.lower())
     variants.add(domain_stem)
-    # TLD 없이 (예: naver, coupang)
     for part in domain.lower().split("."):
         if len(part) > 2:
             variants.add(part)
@@ -313,7 +312,6 @@ def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
     if brand_name:
         variants.add(brand_name.lower())
         variants.add(brand_name.replace(" ", "").lower())
-        # 괄호·특수문자 제거
         cleaned = re.sub(r'[^\w가-힣]', '', brand_name).lower()
         if cleaned:
             variants.add(cleaned)
@@ -350,40 +348,31 @@ def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
 
     # ── 5. 브랜드 약칭 생성 ──
     if brand_name:
-        # 영문 두문자어 (예: "LG Electronics" → "lge")
         words = brand_name.split()
         if len(words) >= 2:
             abbrev = "".join(w[0] for w in words if w).lower()
             if len(abbrev) >= 2:
                 variants.add(abbrev)
-        # 한글 초성 약칭은 실용적이지 않아 제외; 대신 첫 단어만 별도 추가
         first_word = words[0].lower() if words else ""
         if len(first_word) >= 2:
             variants.add(first_word)
 
     # ── 6. 도메인 오타 변형 ──
-    # 흔한 오타 패턴: 자음 중복, 모음 교체, 하이픈 제거
     stem = domain_stem
     typos = set()
-    # 예: navar, naevr, nvear (간단 삽입/삭제 1개)
     if len(stem) >= 4:
-        # 인접 문자 스왑
         for i in range(len(stem) - 1):
             swapped = stem[:i] + stem[i+1] + stem[i] + stem[i+2:]
             typos.add(swapped)
-        # 자주 혼동하는 모음 교체 (e↔a, o↔0)
         typos.add(stem.replace("e", "a"))
         typos.add(stem.replace("a", "e"))
         typos.add(stem.replace("o", "0"))
-        # 하이픈·언더스코어 포함 버전
         typos.add(stem.replace("-", "").replace("_", ""))
-    # 오타는 너무 많으면 오탐 증가 → 최대 5개만 추가
     for t in list(typos)[:5]:
         if t and t != stem and len(t) >= 3:
             variants.add(t)
 
     # ── 7. 한글/영문 혼용 표기 ──
-    # 예: "Naver 네이버", "카카오Kakao"
     for v in list(variants):
         if re.search(r'[가-힣]', v) and brand_name and re.search(r'[a-zA-Z]', brand_name):
             variants.add(brand_name.lower())
@@ -397,10 +386,9 @@ def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
 # 신뢰구간 계산 (Wilson Score Interval)
 # ─────────────────────────────────────────────
 def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
-    """Wilson score interval — 소표본에서도 안정적."""
     if n == 0:
         return 0.0, 100.0
-    z   = 1.96 if confidence == 0.95 else 2.576  # 95% / 99%
+    z   = 1.96 if confidence == 0.95 else 2.576
     p   = hits / n
     denom = 1 + z**2 / n
     center = (p + z**2 / (2 * n)) / denom
@@ -413,17 +401,11 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
 # ─────────────────────────────────────────────
 # Jina Reader 기반 경쟁사 검색 컨텍스트 수집
 # ─────────────────────────────────────────────
-def fetch_competitor_search_context(industry: str, brand: str, market_scope: str) -> str:
-    """
-    Jina Reader로 Google 검색 결과 마크다운을 수집하여
-    AI 경쟁사 도출의 근거 데이터로 제공한다.
-    실패 시 빈 문자열 반환 (AI 자체 지식으로 폴백).
-    """
-    scope_kw = "한국 국내" if "국내" in market_scope else "글로벌"
+def fetch_competitor_search_context(industry: str, brand: str) -> str:
     queries = [
-        f"{industry} 경쟁사 {scope_kw}",
+        f"{industry} 주요 경쟁사",
         f"{brand} 경쟁사 대안 서비스",
-        f"{industry} 주요 업체 비교",
+        f"{industry} 업체 비교",
     ]
     collected = []
     headers = {
@@ -436,7 +418,6 @@ def fetch_competitor_search_context(industry: str, brand: str, market_scope: str
             search_url = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(q)}&hl=ko"
             resp = requests.get(search_url, headers=headers, timeout=15)
             if resp.status_code == 200 and len(resp.text) > 300:
-                # 상위 3000자만 사용 (중복 방지)
                 snippet = resp.text[:3000]
                 collected.append(f"[검색: {q}]\n{snippet}")
         except Exception:
@@ -449,37 +430,21 @@ def fetch_competitor_search_context(industry: str, brand: str, market_scope: str
 # ─────────────────────────────────────────────
 def discover_competitors(client_gpt, client_gemini,
                           biz_info: dict, target_url: str,
-                          market_scope: str,   # "국내 (대한민국)" | "글로벌"
                           model_gpt: str,
                           n_competitors: int = 5,
                           confirmed_industry: str = "") -> list[dict]:
-    """
-    1단계: 사용자 확정 업종(confirmed_industry) 최우선 참조
-    2단계: Jina Reader로 Google 검색 결과 수집 → 실제 경쟁사 데이터 근거 확보
-    3단계: AI가 검색 데이터 기반으로 경쟁사 도출 + 도메인 실존·경쟁 관계 논리 검증
-    반환: [{"rank", "brand_name", "domain", "reason", "market_position", "verified"}, ...]
-    """
     brand    = biz_info.get("brand_name", extract_domain(target_url))
-    # ① 사용자 확정 업종 최우선, 없으면 biz_info 업종 사용
-    industry = confirmed_industry.strip() if confirmed_industry.strip()                else biz_info.get("industry", "디지털 서비스")
+    industry = confirmed_industry.strip() if confirmed_industry.strip() else biz_info.get("industry", "디지털 서비스")
     product  = biz_info.get("core_product", "서비스")
     audience = biz_info.get("target_audience", "일반 사용자")
     domain   = extract_domain(target_url)
 
-    scope_instruction = (
-        "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요. 해외 기업은 제외합니다."
-        if "국내" in market_scope
-        else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요. 국내외 무관하게 선정합니다."
-    )
-
-    # ② Jina Reader로 실제 검색 결과 수집
-    search_context = fetch_competitor_search_context(industry, brand, market_scope)
+    search_context = fetch_competitor_search_context(industry, brand)
     search_context_section = f"""
 [실제 검색 데이터 — 이 데이터를 최우선 근거로 활용하세요]
 {search_context if search_context else "(검색 결과 없음 — AI 자체 지식으로 판단)"}
 """ if search_context else "[검색 데이터: 없음 — AI 자체 지식으로 판단]"
 
-    # ③ 도출 + 검증 통합 프롬프트
     prompt = f"""당신은 디지털 마케팅 업계 전문 애널리스트입니다.
 아래 검색 데이터와 브랜드 정보를 바탕으로 실제 직접 경쟁사를 도출하고, 각 항목을 논리적으로 검증하세요.
 
@@ -496,13 +461,12 @@ def discover_competitors(client_gpt, client_gemini,
 1. 위 검색 데이터에 실제로 등장하는 브랜드/사이트를 최우선 선정
 2. 확정 업종 "{industry}"와 정확히 동일한 카테고리에서 경쟁하는 기업만 포함
 3. {brand} 고객이 이탈할 경우 선택할 가능성이 가장 높은 대안 서비스 우선
-4. {scope_instruction}
+4. 분석 대상 브랜드({brand})의 주 서비스 지역과 언어를 스스로 파악하여, 해당 시장에서 실제로 경쟁하는 기업을 도출하세요.
 5. {brand} 자체({domain})는 절대 포함하지 마세요
 
 [검증 기준 — 각 경쟁사를 반드시 아래 기준으로 검토 후 출력]
 - domain_valid: 해당 도메인이 실제 존재하고 운영 중인 서비스인가? (가상·예시 도메인 제외)
 - is_direct_competitor: {brand}와 동일 업종에서 동일 고객을 두고 직접 경쟁하는가?
-  (단순 동종 업계가 아니라 고객이 {brand} 대신 선택할 수 있는 서비스여야 함)
 - 두 조건 모두 true인 항목만 최종 출력에 포함
 
 [출력 형식 — JSON 배열만, 다른 텍스트 없음]
@@ -538,17 +502,15 @@ def discover_competitors(client_gpt, client_gemini,
         json_match = re.search(r'\[.*\]', result_str, re.DOTALL)
         if json_match:
             raw = json.loads(json_match.group())
-            # 검증 필터: domain_valid AND is_direct_competitor 모두 true인 것만
             competitors = [
                 c for c in raw
                 if c.get("domain_valid", True) and c.get("is_direct_competitor", True)
                 and c.get("domain", "").strip()
-                and "competitor" not in c.get("domain", "").lower()  # 폴백 더미 제외
+                and "competitor" not in c.get("domain", "").lower()
             ]
     except Exception:
         pass
 
-    # 폴백
     if not competitors:
         competitors = [
             {"rank": i+1, "brand_name": f"경쟁사 {i+1}", "domain": f"competitor{i+1}.com",
@@ -569,11 +531,6 @@ def run_sov_simulation(client_gpt, client_gemini,
                         biz_info: dict,
                         model_gpt: str,
                         n: int = 30) -> dict:
-    """
-    타겟 + 경쟁사 전체를 동일 질문으로 시뮬레이션하여
-    Share of Voice(SOV)를 반환한다.
-    반환: {"target": {...}, "competitors": [{...},...], "sov_chart_data": [...]}
-    """
     all_urls = [target_url] + [
         normalize_url(c.get("domain", "")) for c in competitor_list
         if c.get("domain", "").strip()
@@ -659,10 +616,8 @@ def run_sov_simulation(client_gpt, client_gemini,
 
     sov_results = []
     for i, (url, label) in enumerate(zip(all_urls, all_labels)):
-        # AI 분석된 brand_name + 도메인 정보를 모두 활용한 정밀 변형 탐지
         brand_biz = {"brand_name": label, "industry": biz_info.get("industry", "")}
         if i == 0:
-            # 타겟 브랜드는 전체 biz_info 주입
             brand_biz = biz_info
         bv = build_brand_variants(url, brand_biz)
         res = _sim_one_brand(url, bv)
@@ -678,7 +633,6 @@ def run_sov_simulation(client_gpt, client_gemini,
 # 심층 사이트 크롤링 — 비즈니스 실체 추출
 # ─────────────────────────────────────────────
 class _MetaParser(HTMLParser):
-    """메인 페이지에서 title·description·og 태그 추출."""
     def __init__(self):
         super().__init__()
         self.title = ""
@@ -712,11 +666,6 @@ class _MetaParser(HTMLParser):
 
 
 def crawl_site_metadata(url: str) -> dict:
-    """
-    Jina Reader(https://r.jina.ai/{URL})를 통해 JS 렌더링 후 마크다운 텍스트로 수신.
-    봇차단 없이 고품질 콘텐츠를 추출하여 AI 비즈니스 분석 정확도를 높인다.
-    실패 시 빈 값 반환 (웹검색으로 보완).
-    """
     jina_url = f"https://r.jina.ai/{url}"
     headers = {
         "Accept": "text/markdown, text/plain, */*",
@@ -731,7 +680,6 @@ def crawl_site_metadata(url: str) -> dict:
         if len(markdown_text) < 200:
             raise ValueError("Jina returned too little content")
 
-        # 제목 추출: 첫 번째 # 헤딩 or 첫 줄
         title = ""
         for line in markdown_text.splitlines():
             line = line.strip()
@@ -742,7 +690,6 @@ def crawl_site_metadata(url: str) -> dict:
                 title = line[:100]
                 break
 
-        # 설명 추출: 처음 non-heading 단락
         description = ""
         in_content = False
         for line in markdown_text.splitlines():
@@ -759,11 +706,10 @@ def crawl_site_metadata(url: str) -> dict:
         return {
             "title": title,
             "description": description.strip()[:500],
-            "html_snippet": markdown_text[:6000],   # 마크다운 본문 — AI에 충분한 맥락 제공
+            "html_snippet": markdown_text[:6000],
             "crawl_ok": True,
         }
     except Exception:
-        # Jina 실패 시 기존 직접 크롤링으로 폴백
         ua_list = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         ]
@@ -792,10 +738,6 @@ def crawl_site_metadata(url: str) -> dict:
 
 
 def web_search_business_info(domain: str) -> str:
-    """
-    크롤링 실패 시 웹 검색으로 업종 정보를 보완한다.
-    requests로 검색 결과 스니펫을 가져와 텍스트로 반환.
-    """
     queries = [
         f"{domain} 회사 업종 서비스 소개",
         f"site:{domain} OR \"{domain.split('.')[0]}\" 광고 마케팅 쇼핑 서비스",
@@ -804,16 +746,13 @@ def web_search_business_info(domain: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
     for q in queries[:1]:
         try:
-            # Bing 검색 결과 스크랩 (간이)
             resp = requests.get(
                 "https://www.bing.com/search",
                 params={"q": q, "setlang": "ko"},
                 headers=headers, timeout=8
             )
-            # 간단히 텍스트에서 스니펫 추출
             text = re.sub(r'<[^>]+>', ' ', resp.text)
             text = re.sub(r'\s+', ' ', text)
-            # 도메인 주변 200자 추출
             idx = text.lower().find(domain.split(".")[0].lower())
             if idx > 0:
                 snippets.append(text[max(0, idx-100):idx+400])
@@ -824,16 +763,10 @@ def web_search_business_info(domain: str) -> str:
 
 def analyze_business_identity(client_gpt, client_gemini, url: str,
                                model_gpt: str, model_gemini) -> dict:
-    """
-    1단계: Jina로 사이트 크롤링 (사이트명+업종 검색 병행)
-    2단계: 크롤링 실패 시 웹 검색으로 업종 정보 보완
-    3단계: AI로 업종·서비스·타겟·브랜드명 정밀 분석
-    """
     meta        = crawl_site_metadata(url)
     domain      = extract_domain(url)
     domain_stem = domain.split(".")[0]
 
-    # 사이트명 + 업종 키워드로 Jina 추가 크롤링 (분석 정확도 향상)
     jina_biz_context = ""
     try:
         biz_query = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(domain_stem + ' 업종 서비스 소개')}&hl=ko"
@@ -843,7 +776,6 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
     except Exception:
         pass
 
-    # 크롤링 실패 또는 정보 부족 → Bing 웹 검색으로 추가 보완
     web_context = ""
     if not meta["crawl_ok"] or (not meta["title"] and not meta["description"]):
         web_context = web_search_business_info(domain)
@@ -865,7 +797,7 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
 {combined_context if combined_context else '(없음)'}
 
 [분석 지침]
-- 업종은 반드시 실제 구체적인 카테고리로 작성 (예: "퍼포먼스 마케팅 광고대행사", "온라인 패션 쇼핑몰", "B2B SaaS 인사관리", "법률 플랫폼", "음식 배달 서비스")
+- 업종은 반드시 실제 구체적인 카테고리로 작성
 - "디지털 서비스", "IT 서비스", "온라인 서비스" 같은 포괄적이고 모호한 업종명 절대 금지
 - 정보가 부족해도 도메인명과 검색 맥락에서 추론하여 가장 그럴듯한 구체적 업종을 제시할 것
 - 광고/마케팅 관련 키워드(대행사, 퍼포먼스, IMC, 바이럴 등)가 있으면 반드시 광고대행사 계열로 분류
@@ -916,7 +848,7 @@ def analyze_business_identity(client_gpt, client_gemini, url: str,
                         parsed["industry"] = json.loads(m2.group()).get("industry", industry)
                 except Exception:
                     pass
-            parsed.pop("confidence", None)  # confidence 필드 제거
+            parsed.pop("confidence", None)
             return parsed
     except Exception:
         pass
@@ -1093,10 +1025,6 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
                                model_gpt: str, model_gemini,
                                biz_info: dict = None,
                                manual_brand: str = "") -> list[str]:
-    """
-    업종을 정확히 파악한 biz_info 기반으로 실제 잠재고객이 AI에 입력할
-    고품질 질문 5개 생성. 업종별 전문 맥락을 최대한 반영.
-    """
     if not biz_info:
         biz_info = {
             "brand_name": extract_domain(url).split(".")[0].upper(),
@@ -1117,7 +1045,6 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
     domain_clean = extract_domain(url).replace("www.", "")
     confidence = biz_info.get("confidence", "medium")
 
-    # 업종 카테고리별 맞춤 질문 각도 가이드
     category_hints = {
         "광고/마케팅": "광고주(중소기업 대표, 마케터)가 광고대행사를 선택할 때 실제로 묻는 질문 — 수익률(ROAS), 집행 매체, 성과 보고, 계약 조건, 업종 레퍼런스 위주",
         "이커머스": "구매자 입장의 배송·가격·신뢰도·반품 관련 질문, 판매자 입장의 입점·수수료·마케팅 지원 질문",
@@ -1189,7 +1116,6 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
     except Exception as e:
         raise RuntimeError(str(e))
 
-    # 파싱
     lines = [ln.strip() for ln in result.split("\n") if ln.strip()]
     questions = []
     for ln in lines:
@@ -1215,7 +1141,6 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
 
     questions = questions[:5]
 
-    # 폴백 — 업종 맥락 반영
     if len(questions) < 3:
         ad_agency_questions = [
             f"{brand}의 업종별 광고 집행 ROAS가 타 대행사 대비 어느 수준인가요?",
@@ -1241,7 +1166,6 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
 # ─────────────────────────────────────────────
 def simulate_single_gpt(client, question: str, target_url: str, model: str,
                          brand_variants: list[str] = None) -> dict:
-    """비유도형 프롬프트 — 출처 언급 강요 없이 순수 질의 후 탐지."""
     if brand_variants is None:
         domain = extract_domain(target_url)
         brand_variants = [domain, domain.split(".")[0]]
@@ -1261,7 +1185,6 @@ def simulate_single_gpt(client, question: str, target_url: str, model: str,
 # ─────────────────────────────────────────────
 def simulate_single_gemini(model_obj, question: str, target_url: str,
                             brand_variants: list[str] = None) -> dict:
-    """비유도형 프롬프트 — 출처 언급 강요 없이 순수 질의 후 탐지."""
     if brand_variants is None:
         domain = extract_domain(target_url)
         brand_variants = [domain, domain.split(".")[0]]
@@ -1328,7 +1251,6 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
         if client_gemini:
             futures["gemini"] = executor.submit(_run_gemini_batch)
 
-        # 유료 정밀 분석 모드: sleep 없이 즉시 완료 대기
         if progress_callback:
             progress_callback(0.5)
 
@@ -1355,7 +1277,6 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
     gpt_rate = _rate(gpt_hits, gpt_ran)
     gem_rate = _rate(gem_hits, gem_ran)
 
-    # 신뢰구간 (Wilson)
     gpt_ci  = calc_confidence_interval(gpt_hits, actual_n) if gpt_ran else (None, None)
     gem_ci  = calc_confidence_interval(gem_hits, actual_n) if gem_ran else (None, None)
 
@@ -1376,7 +1297,6 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
     }
 
 
-
 # ─────────────────────────────────────────────
 # [고성능] 전체 질문 병렬 시뮬레이션 — 500% 속도 향상
 # ─────────────────────────────────────────────
@@ -1385,10 +1305,6 @@ def run_all_simulations(client_gpt, client_gemini,
                          model_gpt: str, model_gemini,
                          n: int = 50,
                          biz_info: dict = None) -> list[dict]:
-    """
-    N개 질문을 ThreadPoolExecutor로 동시(Parallel) 실행.
-    순차 처리 대비 ~N배 속도 향상. 유료 Pay-as-you-go 계정 전용.
-    """
     def _sim_one(question: str) -> dict:
         try:
             return run_simulation(
@@ -1404,7 +1320,7 @@ def run_all_simulations(client_gpt, client_gemini,
             }
 
     results = [None] * len(questions)
-    max_workers = min(len(questions), 5)  # 질문 수만큼 스레드, 최대 5
+    max_workers = min(len(questions), 5)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(_sim_one, q): i for i, q in enumerate(questions)}
         for future in concurrent.futures.as_completed(future_map):
@@ -1423,18 +1339,11 @@ def run_all_simulations(client_gpt, client_gemini,
 
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini,
-                           biz_info: dict = None,
-                           market_scope: str = "글로벌") -> dict:
+                           biz_info: dict = None) -> dict:
     domain   = extract_domain(target_url)
     brand    = (biz_info or {}).get("brand_name", domain)
     industry = (biz_info or {}).get("industry", "디지털 서비스")
     audience = (biz_info or {}).get("target_audience", "일반 사용자")
-
-    scope_instruction = (
-        "반드시 대한민국에서 서비스하는 국내 기업만 포함하세요."
-        if "국내" in market_scope
-        else "국내외 글로벌 기업을 모두 포함하세요."
-    )
 
     competitor_prompt = f"""당신은 디지털 마케팅 전문 애널리스트입니다.
 
@@ -1444,7 +1353,7 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
 [조건]
 - 분석 대상 브랜드: {brand} (업종: {industry}, 타겟: {audience})
-- {scope_instruction}
+- 분석 대상 브랜드의 언어와 서비스 지역을 자동 판별하여 해당 시장의 주요 경쟁사를 포함하세요.
 - {domain}도 포함시키되 적절한 순위에 배치하세요.
 - 각 도메인에 대해 인용 이유와 경쟁 포지션을 명시하세요.
 
@@ -1509,8 +1418,7 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 
     keyword_prompt = f"""{brand} ({industry}) 사이트에서
 현재 AI 인용 확률이 높을 것으로 예상되는 블루오션 키워드/질문 5개를 추천하세요.
-경쟁이 적고 해당 사이트의 전문성이 높은 틈새 키워드 위주로.
-{scope_instruction}
+경쟁이 적고 해당 사이트의 전문성이 높은 틈새 키워드 위주로 작성하세요.
 
 형식 (키워드만, 한 줄에 하나):"""
 
@@ -1558,7 +1466,7 @@ AI에게 더 잘 인용되도록 홈페이지 개선 방안 3가지를 제시하
 
 
 # ─────────────────────────────────────────────
-# ── [수정] 결과 시각화 — 없는 엔진 Bar 생략
+# 결과 시각화
 # ─────────────────────────────────────────────
 def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI 엔진별 인용 점유율"):
     if not results:
@@ -1574,7 +1482,6 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI
     gpt_rates    = [r.get("gpt_rate")    for r in results]
     gemini_rates = [r.get("gemini_rate") for r in results]
 
-    # 데이터가 존재하는(None이 아닌) 엔진만 Bar 추가
     has_gpt    = any(v is not None for v in gpt_rates)
     has_gemini = any(v is not None for v in gemini_rates)
 
@@ -1637,7 +1544,6 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str = "AI
 # SOV(Share of Voice) 차트 — 경쟁사 비교
 # ─────────────────────────────────────────────
 def render_sov_chart(sov_results: list[dict], title: str = "경쟁사 대비 AI 인용 점유율 (SOV)"):
-    """타겟 + 경쟁사 전체의 평균 인용률을 가로 막대 + 신뢰구간으로 시각화."""
     if not sov_results:
         return
 
@@ -1684,7 +1590,6 @@ def render_sov_chart(sov_results: list[dict], title: str = "경쟁사 대비 AI 
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 상세 테이블
     rows = []
     for r in sov_results:
         rows.append({
@@ -1696,6 +1601,7 @@ def render_sov_chart(sov_results: list[dict], title: str = "경쟁사 대비 AI 
             "95% 신뢰구간": f"{r.get('ci_lo', 0):.1f}% ~ {r.get('ci_hi', 0):.1f}%",
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
 def render_strategy_analysis(strategy: dict, target_url: str):
     domain = extract_domain(target_url)
 
@@ -1814,7 +1720,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── 다크/라이트 모드 토글 ──
     _mode_label = "☀️ 라이트 모드로 전환" if _dark else "🌙 다크 모드로 전환"
     if st.button(_mode_label, key="btn_darkmode", use_container_width=True):
         st.session_state["dark_mode"] = not st.session_state["dark_mode"]
@@ -1847,32 +1752,15 @@ with st.sidebar:
                           help="정밀 분석 모드: 설정 횟수만큼 병렬 API를 호출하여 인용 점유율을 산출합니다. 횟수가 높을수록 통계 신뢰도(95% Wilson CI)가 향상됩니다.")
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    st.markdown("**🌐 경쟁사 분석 설정**")
-
-    market_scope = st.radio(
-        "경쟁사 범위",
-        ["국내 (대한민국)", "글로벌"],
-        index=0,
-        horizontal=True,
-        help="국내: 대한민국에서 서비스 중인 기업만 / 글로벌: 전 세계 기업 포함",
-        key="market_scope"
-    )
+    st.markdown("**🌐 경쟁사 수 설정**")
 
     n_competitors = st.slider(
         "경쟁사 수",
         min_value=3, max_value=10, value=5, step=1,
-        help="AI가 업종 분석 후 도출할 경쟁사 수. 많을수록 SOV 분석이 풍부해지지만 시간이 소요됩니다.",
+        help="AI가 업종 분석 후 자동 도출할 경쟁사 수. 많을수록 SOV 분석이 풍부해지지만 시간이 소요됩니다.",
         key="n_competitors"
     )
 
-    st.markdown(f"""
-    <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
-    border-radius:8px;padding:10px 12px;margin-top:4px;font-size:0.73rem;color:rgba(255,255,255,0.75);">
-    {'🇰🇷 대한민국 기업만 분석합니다.' if '국내' in market_scope else '🌍 전 세계 글로벌 기업을 포함합니다.'}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── [수정] API 연결 상태 — 각 엔진 독립 표시 ──
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     st.markdown("**📡 연결 상태**")
 
@@ -1884,14 +1772,13 @@ with st.sidebar:
         if gpt_ok:
             st.markdown("🟢 **GPT** 연결됨")
         else:
-            st.markdown("⚪ **GPT** 미입력")   # 빨간불 → 흰불 (선택 항목임을 명시)
+            st.markdown("⚪ **GPT** 미입력")
     with col_s2:
         if gemini_ok:
             st.markdown("🟢 **Gemini** 연결됨")
         else:
             st.markdown("🔴 **Gemini** 미연결")
 
-    # ── [수정] Gemini만 있어도 실행 가능 안내 ──
     if gemini_ok and not gpt_ok:
         st.markdown("""
         <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);
@@ -1990,8 +1877,6 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Step A: URL 입력 전, 미리 분석 버튼 처리 (위젯 렌더 전에 session_state 세팅) ──
-    # pre_analyze 플래그는 session_state로 관리 — 버튼 클릭 → 분석 → rerun → 위젯에 반영
     _pending_pre = st.session_state.pop("_do_pre_analyze", False)
 
     col_url, col_brand = st.columns([2, 1])
@@ -2002,8 +1887,6 @@ with tab1:
             key="url_auto"
         )
     with col_brand:
-        # Step B: text_input 렌더 전에 session_state["industry_display"] 세팅
-        # key와 별도로 display 전용 상태 변수 사용 → value/key 충돌 완전 회피
         if "industry_display" not in st.session_state:
             st.session_state["industry_display"] = ""
         manual_industry_input = st.text_input(
@@ -2013,10 +1896,8 @@ with tab1:
             key="industry_widget",
             help="[업종 미리 분석] 버튼으로 AI가 자동으로 채워줍니다. 틀리면 직접 수정하세요."
         )
-        # 사용자가 수정하면 display 상태도 동기화
         st.session_state["industry_display"] = manual_industry_input
 
-    # Step A: 버튼 행
     col_pre, col_btn1, col_btn2 = st.columns([1, 2, 1])
     with col_pre:
         pre_analyze_clicked = st.button("🔍 업종 미리 분석", key="btn_pre_analyze",
@@ -2035,7 +1916,6 @@ with tab1:
         help="타겟 질문을 생성할 AI 엔진 선택"
     )
 
-    # Step A 처리: 버튼 클릭 → 분석 → session_state 갱신 → rerun → Step B 위젯에 반영
     if pre_analyze_clicked:
         if not url_auto.strip():
             st.warning("URL을 먼저 입력해주세요.")
@@ -2049,7 +1929,6 @@ with tab1:
                         client_gpt, client_gemini, _pre_url, gpt_model, client_gemini
                     )
                     _detected_industry = _pre_biz.get("industry", "")
-                    # session_state 갱신 — rerun 후 위젯 value에 정상 반영됨
                     st.session_state["industry_display"] = _detected_industry
                     st.session_state["ai_analyzed_industry"] = _detected_industry
                     st.session_state["ai_analyzed_biz_info"] = _pre_biz
@@ -2063,10 +1942,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"업종 분석 실패: {e}")
 
-    # ── 데모/실제 분석 ──
     trigger_demo = run_demo_auto or st.session_state.get("run_demo", False)
     if pre_analyze_clicked:
-        pass  # 위에서 처리 완료
+        pass
     elif trigger_demo:
         st.session_state["run_demo"] = False
         demo_url = url_auto.strip() if url_auto.strip() else "naver.com"
@@ -2121,7 +1999,6 @@ with tab1:
                 c3.metric("평균 점유율",   f"{avg_rate:.1f}%")
                 render_strategy_analysis(demo_data["strategy"], target_url_d)
 
-    # ── 실제 분석 ──
     elif run_real_auto and not pre_analyze_clicked:
         if not url_auto:
             st.error("사이트 URL을 입력해주세요.")
@@ -2133,12 +2010,10 @@ with tab1:
             target_url = normalize_url(url_auto)
             domain     = extract_domain(target_url)
 
-            # ── Step 0: 사이트 크롤링 & 비즈니스 분석 ──
             biz_info = {}
             with st.spinner(f"🔎 {domain} 비즈니스 실체 분석 중..."):
                 st.markdown("**🔎 Step 0 — 사이트 심층 크롤링 및 비즈니스 실체 파악 중...**")
                 try:
-                    # 정밀 분석 모드 최적화: 사전 분석 결과 재사용으로 분석 일관성 보장
                     _cached_biz = st.session_state.get("ai_analyzed_biz_info", {})
                     _cached_url = st.session_state.get("ai_analyzed_url", "")
                     if _cached_biz and _cached_url == target_url:
@@ -2150,7 +2025,6 @@ with tab1:
                         )
                         st.session_state["ai_analyzed_url"] = target_url
 
-                    # Step C: 화면 입력창(industry_widget)에 최종 남아있는 값을 업종으로 확정
                     _user_industry = st.session_state.get("industry_display", "").strip()
                     if _user_industry:
                         biz_info["industry"] = _user_industry
@@ -2171,10 +2045,6 @@ with tab1:
                     if _user_industry:
                         biz_info["industry"] = _user_industry
 
-            # ── 경쟁사 도출 기능 제거됨 ──
-            competitors_list = []
-
-            # ── Step 2: 타겟 질문 도출 (최적화) ──
             questions = []
             with st.spinner(f"{domain} 타겟 질문 도출 중..."):
                 st.markdown("**📝 Step 2 — 브랜드·업종 맥락 기반 타겟 질문 도출 중...**")
@@ -2205,8 +2075,6 @@ with tab1:
 
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-                # ── Step 3: 질문별 순차 시뮬레이션 ──
-                # 예상 시간 계산: GPT·Gemini 각 sim_count회, 질문당 약 (sim_count * 0.5)초 소요
                 _active_engines = (1 if client_gpt else 0) + (1 if client_gemini else 0)
                 _est_sec_per_q  = sim_count * 0.6 * _active_engines
                 _est_total_sec  = int(_est_sec_per_q * len(questions))
@@ -2215,7 +2083,7 @@ with tab1:
                     else f"{_est_total_sec // 60}분 {_est_total_sec % 60}초"
                 )
                 st.markdown(
-                    f"**📊 Step 3 — 질문 {len(questions)}개 병렬 동시 시뮬레이션**  "
+                    f"**📊 Step 3 — 질문 {len(questions)}개 병렬 동시 시뮬레이션** "
                     f"<span style='color:#888;font-size:0.82rem;'>⚡ 정밀 분석 모드 — 전체 질문 동시 실행 "
                     f"({sim_count}회 × {len(questions)}개 질문 × {_active_engines}개 엔진 | 예상: ~{max(15, sim_count // 3)}초)</span>",
                     unsafe_allow_html=True
@@ -2232,7 +2100,6 @@ with tab1:
                 )
                 progress_bar.progress(0.1)
 
-                # ── 병렬 전체 시뮬레이션 (500% 속도 향상) ──
                 all_results = run_all_simulations(
                     client_gpt, client_gemini, questions, target_url,
                     gpt_model, client_gemini, n=sim_count, biz_info=biz_info,
@@ -2244,11 +2111,9 @@ with tab1:
                 time_text.empty()
                 progress_bar.progress(1.0)
 
-                # 질문별 점유율 차트
                 render_bar_chart(all_results, questions,
                                  f"'{biz_info.get('brand_name', domain)}' 질문별 AI 인용 점유율")
 
-                # ── Step 4: 질문별 상세 결과 ──
                 st.markdown("### 📋 질문별 상세 결과")
                 for i, (q, r) in enumerate(zip(questions, all_results)):
                     gpt_val    = f"{r['gpt_rate']}%"    if r.get('gpt_rate')    is not None else "—"
@@ -2301,7 +2166,6 @@ with tab1:
                                         client_gpt, client_gemini, q, target_url,
                                         gpt_model, client_gemini,
                                         biz_info=biz_info,
-                                        market_scope=market_scope,
                                     )
                                     render_strategy_analysis(strategy, target_url)
                                 except Exception as e:
@@ -2350,7 +2214,6 @@ with tab2:
         run_demo_manual = st.button("🎬 데모 실행", key="btn_demo_manual", use_container_width=True,
                                     help="API 키 없이 샘플 결과를 확인합니다")
 
-    # ── 데모 모드 ──
     if run_demo_manual:
         demo_url_m = url_manual.strip() if url_manual.strip() else "coupang.com"
         target_url_dm = normalize_url(demo_url_m)
@@ -2398,7 +2261,6 @@ with tab2:
             st.markdown(f"### 🎯 '{kw_d}' 전략 분석")
             render_strategy_analysis(demo_data_m["strategy"], target_url_dm)
 
-    # ── 실제 분석 ──
     elif run_real_manual:
         if not url_manual:
             st.error("사이트 URL을 입력해주세요.")
@@ -2416,7 +2278,6 @@ with tab2:
                 all_keywords.extend(extra[:4])
             all_keywords = all_keywords[:5]
 
-            # ── 사이트 비즈니스 분석 (수동형에서도 경쟁사 도출 품질 향상) ──
             biz_info_m = {}
             with st.spinner(f"🔎 {domain} 업종 분석 중..."):
                 try:
@@ -2429,20 +2290,19 @@ with tab2:
                                   "industry": "디지털 서비스",
                                   "core_product": "서비스", "target_audience": "일반 사용자"}
 
-            # ── 경쟁사 도출 ──
             competitors_m = []
-            with st.spinner(f"🏢 [{market_scope}] 경쟁사 분석 중..."):
+            with st.spinner(f"🏢 경쟁사 분석 중..."):
                 try:
                     competitors_m = discover_competitors(
                         client_gpt, client_gemini, biz_info_m, target_url,
-                        market_scope=market_scope, model_gpt=gpt_model,
+                        model_gpt=gpt_model,
                         n_competitors=n_competitors,
                     )
                     st.success(f"✅ 경쟁사 {len(competitors_m)}개 도출")
                 except Exception as e:
                     st.warning(f"경쟁사 도출 실패: {e}")
 
-            st.markdown(f"**분석 대상:** `{domain}` | **키워드:** {len(all_keywords)}개 | **범위:** {market_scope}")
+            st.markdown(f"**분석 대상:** `{domain}` | **키워드:** {len(all_keywords)}개")
 
             all_results_m = []
             progress_bar_m = st.progress(0)
@@ -2479,10 +2339,9 @@ with tab2:
             render_bar_chart(all_results_m, all_keywords,
                              f"'{biz_info_m.get('brand_name', domain)}' 키워드별 AI 인용 점유율")
 
-            # 경쟁사 SOV (첫 번째 키워드 기준)
             if competitors_m:
                 st.markdown("---")
-                st.markdown(f"**🏆 경쟁사 대비 SOV — [{market_scope}]**")
+                st.markdown(f"**🏆 경쟁사 대비 인용 점유율 (SOV)**")
                 st.caption(f"기준 키워드: *{all_keywords[0]}*")
                 with st.spinner("SOV 시뮬레이션 중..."):
                     try:
@@ -2493,12 +2352,10 @@ with tab2:
                             model_gpt=gpt_model,
                             n=max(10, sim_count // 3),
                         )
-                        render_sov_chart(sov_m,
-                                         f"[{market_scope}] '{biz_info_m.get('brand_name', domain)}' vs 경쟁사 SOV")
+                        render_sov_chart(sov_m, f"'{biz_info_m.get('brand_name', domain)}' vs 경쟁사 SOV")
                     except Exception as e:
                         st.warning(f"SOV 분석 오류: {e}")
 
-            # 결과 요약 테이블 + 신뢰구간
             st.markdown("### 📊 결과 요약")
             table_data = []
             for kw, r in zip(all_keywords, all_results_m):
@@ -2526,7 +2383,6 @@ with tab2:
                     st.markdown("---")
                     st.markdown(f"### 🎯 '{kw_s}' 전략 분석")
 
-                    # 응답 샘플
                     gpt_samp = r_s.get("gpt_samples", [])
                     gem_samp = r_s.get("gemini_samples", [])
                     if gpt_samp or gem_samp:
@@ -2550,7 +2406,6 @@ with tab2:
                                 client_gpt, client_gemini, kw_s, target_url,
                                 gpt_model, client_gemini,
                                 biz_info=biz_info_m,
-                                market_scope=market_scope,
                             )
                             render_strategy_analysis(strategy, target_url)
                         except Exception as e:
