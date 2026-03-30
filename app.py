@@ -411,20 +411,57 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
 
 
 # ─────────────────────────────────────────────
-# AI 업종 분석 기반 경쟁사 도출
+# Jina Reader 기반 경쟁사 검색 컨텍스트 수집
+# ─────────────────────────────────────────────
+def fetch_competitor_search_context(industry: str, brand: str, market_scope: str) -> str:
+    """
+    Jina Reader로 Google 검색 결과 마크다운을 수집하여
+    AI 경쟁사 도출의 근거 데이터로 제공한다.
+    실패 시 빈 문자열 반환 (AI 자체 지식으로 폴백).
+    """
+    scope_kw = "한국 국내" if "국내" in market_scope else "글로벌"
+    queries = [
+        f"{industry} 경쟁사 {scope_kw}",
+        f"{brand} 경쟁사 대안 서비스",
+        f"{industry} 주요 업체 비교",
+    ]
+    collected = []
+    headers = {
+        "Accept": "text/markdown, text/plain, */*",
+        "X-Return-Format": "markdown",
+        "X-Timeout": "10",
+    }
+    for q in queries:
+        try:
+            search_url = f"https://r.jina.ai/https://www.google.com/search?q={requests.utils.quote(q)}&hl=ko"
+            resp = requests.get(search_url, headers=headers, timeout=15)
+            if resp.status_code == 200 and len(resp.text) > 300:
+                # 상위 3000자만 사용 (중복 방지)
+                snippet = resp.text[:3000]
+                collected.append(f"[검색: {q}]\n{snippet}")
+        except Exception:
+            continue
+    return "\n\n".join(collected)[:8000]
+
+
+# ─────────────────────────────────────────────
+# AI 업종 분석 기반 경쟁사 도출 (Jina 강화 + 검증 포함)
 # ─────────────────────────────────────────────
 def discover_competitors(client_gpt, client_gemini,
                           biz_info: dict, target_url: str,
                           market_scope: str,   # "국내 (대한민국)" | "글로벌"
                           model_gpt: str,
-                          n_competitors: int = 5) -> list[dict]:
+                          n_competitors: int = 5,
+                          confirmed_industry: str = "") -> list[dict]:
     """
-    업종·서비스·타겟을 바탕으로 AI가 실제 경쟁사를 도출한다.
-    market_scope: "국내 (대한민국)" → 한국 기업만 / "글로벌" → 전 세계
-    반환: [{"rank", "brand_name", "domain", "reason", "market_position"}, ...]
+    1단계: 사용자 확정 업종(confirmed_industry) 최우선 참조
+    2단계: Jina Reader로 Google 검색 결과 수집 → 실제 경쟁사 데이터 근거 확보
+    3단계: AI가 검색 데이터 기반으로 경쟁사 도출 + 도메인 실존·경쟁 관계 논리 검증
+    반환: [{"rank", "brand_name", "domain", "reason", "market_position", "verified"}, ...]
     """
     brand    = biz_info.get("brand_name", extract_domain(target_url))
-    industry = biz_info.get("industry",  "디지털 서비스")
+    # ① 사용자 확정 업종 최우선, 없으면 biz_info 업종 사용
+    industry = confirmed_industry.strip() if confirmed_industry.strip()                else biz_info.get("industry", "디지털 서비스")
     product  = biz_info.get("core_product", "서비스")
     audience = biz_info.get("target_audience", "일반 사용자")
     domain   = extract_domain(target_url)
@@ -435,44 +472,64 @@ def discover_competitors(client_gpt, client_gemini,
         else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요. 국내외 무관하게 선정합니다."
     )
 
+    # ② Jina Reader로 실제 검색 결과 수집
+    search_context = fetch_competitor_search_context(industry, brand, market_scope)
+    search_context_section = f"""
+[실제 검색 데이터 — 이 데이터를 최우선 근거로 활용하세요]
+{search_context if search_context else "(검색 결과 없음 — AI 자체 지식으로 판단)"}
+""" if search_context else "[검색 데이터: 없음 — AI 자체 지식으로 판단]"
+
+    # ③ 도출 + 검증 통합 프롬프트
     prompt = f"""당신은 디지털 마케팅 업계 전문 애널리스트입니다.
+아래 검색 데이터와 브랜드 정보를 바탕으로 실제 직접 경쟁사를 도출하고, 각 항목을 논리적으로 검증하세요.
 
-아래 브랜드의 실제 직접 경쟁사 {n_competitors}개를 정확하게 도출하세요.
-
-[분석 대상]
+[분석 대상 — 사용자가 직접 확정한 업종 정보]
 - 브랜드명: {brand}
 - 도메인: {domain}
-- 업종: {industry}
+- 업종 (확정값): {industry}
 - 핵심 서비스: {product}
 - 주요 타겟: {audience}
 
-[경쟁사 선정 기준]
-1. 동일한 업종·카테고리에서 동일한 타겟 고객을 대상으로 경쟁하는 기업
-2. {brand}의 고객이 이탈할 경우 선택할 가능성이 높은 대안 서비스
-3. 시장 점유율 또는 AI 인용 빈도가 유사하거나 높은 기업 우선
+{search_context_section}
+
+[경쟁사 도출 기준]
+1. 위 검색 데이터에 실제로 등장하는 브랜드/사이트를 최우선 선정
+2. 확정 업종 "{industry}"와 정확히 동일한 카테고리에서 경쟁하는 기업만 포함
+3. {brand} 고객이 이탈할 경우 선택할 가능성이 가장 높은 대안 서비스 우선
 4. {scope_instruction}
-5. {brand} 자체는 제외하고, {domain}도 목록에 포함하지 마세요.
+5. {brand} 자체({domain})는 절대 포함하지 마세요
+
+[검증 기준 — 각 경쟁사를 반드시 아래 기준으로 검토 후 출력]
+- domain_valid: 해당 도메인이 실제 존재하고 운영 중인 서비스인가? (가상·예시 도메인 제외)
+- is_direct_competitor: {brand}와 동일 업종에서 동일 고객을 두고 직접 경쟁하는가?
+  (단순 동종 업계가 아니라 고객이 {brand} 대신 선택할 수 있는 서비스여야 함)
+- 두 조건 모두 true인 항목만 최종 출력에 포함
 
 [출력 형식 — JSON 배열만, 다른 텍스트 없음]
 [
   {{
     "rank": 1,
     "brand_name": "브랜드명 (한글 또는 영문)",
-    "domain": "실제도메인.com",
-    "reason": "경쟁 관계 이유 20자 이내",
-    "market_position": "시장 내 포지션 (예: 업계 1위, 신흥 강자, 틈새 전문)"
+    "domain": "실제존재하는도메인.com",
+    "reason": "경쟁 관계 이유 25자 이내",
+    "market_position": "업계 1위 / 신흥 강자 / 틈새 전문 중 택1",
+    "domain_valid": true,
+    "is_direct_competitor": true,
+    "evidence": "검색 데이터 또는 AI 지식 중 근거 출처"
   }},
   ...
-]"""
+]
+
+검증을 통과한 경쟁사 {n_competitors}개를 rank 순으로 출력하세요."""
 
     result_str = ""
     try:
         if client_gpt:
-            result_str = call_gpt(client_gpt, prompt, max_tokens=800, model=model_gpt,
-                                   temperature_override=0.3)
+            result_str = call_gpt(client_gpt, prompt, max_tokens=1200, model=model_gpt,
+                                   temperature_override=0.2)
         elif client_gemini:
-            result_str = call_gemini(client_gemini, prompt, max_tokens=800,
-                                      temperature_override=0.3)
+            result_str = call_gemini(client_gemini, prompt, max_tokens=1200,
+                                      temperature_override=0.2)
     except Exception:
         pass
 
@@ -480,7 +537,14 @@ def discover_competitors(client_gpt, client_gemini,
     try:
         json_match = re.search(r'\[.*\]', result_str, re.DOTALL)
         if json_match:
-            competitors = json.loads(json_match.group())
+            raw = json.loads(json_match.group())
+            # 검증 필터: domain_valid AND is_direct_competitor 모두 true인 것만
+            competitors = [
+                c for c in raw
+                if c.get("domain_valid", True) and c.get("is_direct_competitor", True)
+                and c.get("domain", "").strip()
+                and "competitor" not in c.get("domain", "").lower()  # 폴백 더미 제외
+            ]
     except Exception:
         pass
 
@@ -488,7 +552,8 @@ def discover_competitors(client_gpt, client_gemini,
     if not competitors:
         competitors = [
             {"rank": i+1, "brand_name": f"경쟁사 {i+1}", "domain": f"competitor{i+1}.com",
-             "reason": "동종 업계 경쟁사", "market_position": "시장 참여자"}
+             "reason": "동종 업계 경쟁사", "market_position": "시장 참여자",
+             "domain_valid": False, "is_direct_competitor": False, "evidence": "폴백"}
             for i in range(n_competitors)
         ]
     return competitors[:n_competitors]
@@ -1865,6 +1930,10 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Step A: URL 입력 전, 미리 분석 버튼 처리 (위젯 렌더 전에 session_state 세팅) ──
+    # pre_analyze 플래그는 session_state로 관리 — 버튼 클릭 → 분석 → rerun → 위젯에 반영
+    _pending_pre = st.session_state.pop("_do_pre_analyze", False)
+
     col_url, col_brand = st.columns([2, 1])
     with col_url:
         url_auto = st.text_input(
@@ -1873,30 +1942,41 @@ with tab1:
             key="url_auto"
         )
     with col_brand:
-        # Step B: AI가 분석한 업종 값을 value로 자동 할당 — 사용자가 직접 수정 가능
-        _ai_industry_default = st.session_state.get("ai_analyzed_industry", "")
+        # Step B: text_input 렌더 전에 session_state["industry_display"] 세팅
+        # key와 별도로 display 전용 상태 변수 사용 → value/key 충돌 완전 회피
+        if "industry_display" not in st.session_state:
+            st.session_state["industry_display"] = ""
         manual_industry_input = st.text_input(
             "🏭 업종 확인·수정 (AI 자동 분석 → 직접 수정 가능)",
-            value=_ai_industry_default,
+            value=st.session_state["industry_display"],
             placeholder="예) 퍼포먼스 마케팅 광고대행사",
-            key="manual_industry_input",
-            help="URL 입력 후 [업종 미리 분석] 버튼을 누르면 AI가 자동으로 채워줍니다. 틀린 경우 직접 수정하세요."
+            key="industry_widget",
+            help="[업종 미리 분석] 버튼으로 AI가 자동으로 채워줍니다. 틀리면 직접 수정하세요."
         )
+        # 사용자가 수정하면 display 상태도 동기화
+        st.session_state["industry_display"] = manual_industry_input
 
-    # Step A: URL 입력 시 업종 미리 분석 버튼
+    # Step A: 버튼 행
     col_pre, col_btn1, col_btn2 = st.columns([1, 2, 1])
     with col_pre:
-        pre_analyze = st.button("🔍 업종 미리 분석", key="btn_pre_analyze",
-                                help="URL을 먼저 분석하여 업종을 자동으로 채워줍니다",
-                                use_container_width=True)
+        pre_analyze_clicked = st.button("🔍 업종 미리 분석", key="btn_pre_analyze",
+                                        help="URL을 먼저 분석하여 업종을 자동으로 채워줍니다",
+                                        use_container_width=True)
     with col_btn1:
         run_real_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
     with col_btn2:
         run_demo_auto = st.button("🎬 데모 실행", key="btn_demo_auto", use_container_width=True,
                                   help="API 키 없이 샘플 결과를 확인합니다")
 
-    # Step A 처리: 업종 미리 분석
-    if pre_analyze:
+    question_engine = st.radio(
+        "질문 도출 엔진",
+        ["GPT", "Gemini"],
+        horizontal=True,
+        help="타겟 질문을 생성할 AI 엔진 선택"
+    )
+
+    # Step A 처리: 버튼 클릭 → 분석 → session_state 갱신 → rerun → Step B 위젯에 반영
+    if pre_analyze_clicked:
         if not url_auto.strip():
             st.warning("URL을 먼저 입력해주세요.")
         elif not gpt_ok and not gemini_ok:
@@ -1908,13 +1988,16 @@ with tab1:
                     _pre_biz = analyze_business_identity(
                         client_gpt, client_gemini, _pre_url, gpt_model, client_gemini
                     )
-                    # Step A → Step B: session_state에 저장하여 text_input value로 반영
-                    st.session_state["ai_analyzed_industry"] = _pre_biz.get("industry", "")
+                    _detected_industry = _pre_biz.get("industry", "")
+                    # session_state 갱신 — rerun 후 위젯 value에 정상 반영됨
+                    st.session_state["industry_display"] = _detected_industry
+                    st.session_state["ai_analyzed_industry"] = _detected_industry
                     st.session_state["ai_analyzed_biz_info"] = _pre_biz
+                    st.session_state["ai_analyzed_url"] = _pre_url
                     _conf = {"high": "🟢 높음", "medium": "🟡 보통", "low": "🔴 낮음"}.get(
                         _pre_biz.get("confidence", "medium"), "🟡 보통")
                     st.success(
-                        f"✅ 업종 자동 분석 완료: **{_pre_biz.get('industry', '—')}** "
+                        f"✅ 업종 자동 분석 완료: **{_detected_industry}** "
                         f"(브랜드: {_pre_biz.get('brand_name','—')} / 신뢰도: {_conf})"
                     )
                     st.info("업종이 맞지 않으면 위 입력창에서 직접 수정 후 [자동 분석 시작]을 누르세요.")
@@ -1922,16 +2005,11 @@ with tab1:
                 except Exception as e:
                     st.error(f"업종 분석 실패: {e}")
 
-    question_engine = st.radio(
-        "질문 도출 엔진",
-        ["GPT", "Gemini"],
-        horizontal=True,
-        help="타겟 질문을 생성할 AI 엔진 선택"
-    )
-
-    # ── 데모 모드 ──
+    # ── 데모/실제 분석 ──
     trigger_demo = run_demo_auto or st.session_state.get("run_demo", False)
-    if trigger_demo:
+    if pre_analyze_clicked:
+        pass  # 위에서 처리 완료
+    elif trigger_demo:
         st.session_state["run_demo"] = False
         demo_url = url_auto.strip() if url_auto.strip() else "naver.com"
         target_url_d = normalize_url(demo_url)
@@ -1988,7 +2066,7 @@ with tab1:
                 render_strategy_analysis(demo_data["strategy"], target_url_d)
 
     # ── 실제 분석 ──
-    elif run_real_auto:
+    elif run_real_auto and not pre_analyze:
         if not url_auto:
             st.error("사이트 URL을 입력해주세요.")
         elif not gpt_ok and not gemini_ok:
@@ -2016,32 +2094,40 @@ with tab1:
                         )
                         st.session_state["ai_analyzed_url"] = target_url
 
-                    # Step C: 화면 입력창에 최종적으로 남은 업종 텍스트를 우선 반영
-                    if manual_industry_input.strip():
-                        biz_info["industry"] = manual_industry_input.strip()
+                    # Step C: 화면 입력창(industry_widget)에 최종 남아있는 값을 업종으로 확정
+                    _user_industry = st.session_state.get("industry_display", "").strip()
+                    if _user_industry:
+                        biz_info["industry"] = _user_industry
 
                     st.success("✅ 비즈니스 분석 완료")
                     col_b1, col_b2, col_b3, col_b4 = st.columns(4)
                     col_b1.metric("브랜드명",   biz_info.get("brand_name", "—"),
                                   "🤖 AI 분석")
                     col_b2.metric("업종",       biz_info.get("industry", "—"),
-                                  "✏️ 사용자 확정" if manual_industry_input.strip() else "🤖 AI 분석")
+                                  "✏️ 사용자 확정" if _user_industry else "🤖 AI 분석")
                     col_b3.metric("분류",       biz_info.get("industry_category", "—"))
                     col_b4.metric("분석 신뢰도", {"high":"🟢 높음","medium":"🟡 보통","low":"🔴 낮음"}.get(
                                   biz_info.get("confidence","medium"), "🟡 보통"))
                     if biz_info.get("key_services"):
                         st.caption("📋 주요 서비스: " + " · ".join(biz_info["key_services"][:5]))
-                    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style=\'height:10px\'></div>", unsafe_allow_html=True)
                 except Exception as e:
                     st.warning(f"사이트 분석 일부 실패 (기본값으로 진행): {e}")
-                    if manual_industry_input.strip():
-                        biz_info["industry"] = manual_industry_input.strip()
+                    _user_industry = st.session_state.get("industry_display", "").strip()
+                    if _user_industry:
+                        biz_info["industry"] = _user_industry
 
-            # ── Step 1: 경쟁사 도출 ──
+            # ── Step 1: 경쟁사 도출 (사용자 확정 업종 + Jina 검색 근거 + 검증) ──
             competitors_list = []
             scope_label = market_scope
-            with st.spinner(f"🏢 {scope_label} 기준 경쟁사 {n_competitors}개 AI 분석 중..."):
-                st.markdown(f"**🏢 Step 1 — [{scope_label}] 업종 기반 실제 경쟁사 도출 중...**")
+            # 사용자가 UI에서 최종 확정한 업종값 (Step C에서 biz_info에 이미 반영됨)
+            _confirmed_industry = biz_info.get("industry", "")
+            with st.spinner(f"🏢 {scope_label} 기준 경쟁사 {n_competitors}개 도출 중 (Jina 검색 + AI 검증)..."):
+                st.markdown(
+                    f"**🏢 Step 1 — [{scope_label}] 업종 '{_confirmed_industry}' 기반 경쟁사 도출 중...**"
+                )
+                if _confirmed_industry:
+                    st.caption(f"📌 사용자 확정 업종 최우선 적용: **{_confirmed_industry}**")
                 try:
                     competitors_list = discover_competitors(
                         client_gpt, client_gemini,
@@ -2049,23 +2135,41 @@ with tab1:
                         market_scope=market_scope,
                         model_gpt=gpt_model,
                         n_competitors=n_competitors,
+                        confirmed_industry=_confirmed_industry,
                     )
-                    st.success(f"✅ 경쟁사 {len(competitors_list)}개 도출 완료")
-                    # 경쟁사 미리보기 카드
+                    verified_count = sum(
+                        1 for c in competitors_list
+                        if c.get("domain_valid") and c.get("is_direct_competitor")
+                    )
+                    st.success(
+                        f"✅ 경쟁사 {len(competitors_list)}개 도출 완료 "
+                        f"(검증 통과: {verified_count}/{len(competitors_list)})"
+                    )
+                    # 경쟁사 미리보기 카드 (검증 배지 포함)
                     comp_cols = st.columns(min(len(competitors_list), 5))
                     for ci, comp in enumerate(competitors_list[:5]):
                         with comp_cols[ci]:
                             pos = comp.get("market_position", "")
                             pos_colors = {"업계 1위":"#10B981","신흥 강자":"#F59E0B","틈새 전문":"#6366F1"}
                             pc = pos_colors.get(pos, "#888888")
+                            is_verified = comp.get("domain_valid") and comp.get("is_direct_competitor")
+                            verify_badge = (
+                                '<div style="color:#10B981;font-size:0.68rem;margin-top:4px;">✅ 검증됨</div>'
+                                if is_verified else
+                                '<div style="color:#F59E0B;font-size:0.68rem;margin-top:4px;">⚠️ 미검증</div>'
+                            )
+                            evidence = comp.get("evidence", "")
+                            evidence_tip = f'title="{evidence}"' if evidence else ""
                             st.markdown(f"""
-                            <div style="background:white;border-radius:12px;padding:12px 14px;
-                            border:1px solid #E2E8F0;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+                            <div {evidence_tip} style="background:white;border-radius:12px;padding:12px 14px;
+                            border:1.5px solid {"#D1FAE5" if is_verified else "#FEF3C7"};
+                            text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
                                 <div style="font-weight:700;font-size:0.85rem;color:#111;">{comp.get('brand_name','')}</div>
                                 <div style="color:#888;font-size:0.72rem;margin:2px 0;">{comp.get('domain','')}</div>
                                 <div style="background:{pc};color:white;border-radius:20px;
                                 font-size:0.7rem;font-weight:700;padding:2px 8px;margin-top:6px;display:inline-block;">
                                 {pos if pos else '경쟁사'}</div>
+                                {verify_badge}
                             </div>
                             """, unsafe_allow_html=True)
                 except Exception as e:
