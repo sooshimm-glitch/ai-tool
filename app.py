@@ -99,18 +99,15 @@ st.markdown(f"""
     --shadow-hover:{_shadow_h};
 }}
 
-/* 1. 전체 배경 & 기본 폰트 */
 html, body, [class*="css"], .stApp {{
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     background-color: var(--bg) !important;
 }}
 
-/* 2. 메인 화면 텍스트 색상 강제 고정 (라이트모드 글씨 실종 완벽 차단) */
 .stApp p, .stApp span, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp .markdown-text-container {{
     color: var(--text) !important;
 }}
 
-/* 3. 사이드바 강제 예외 처리 (어두운 배경이므로 항상 흰색 텍스트) */
 [data-testid="stSidebar"] {{
     background: {_sidebar_gr} !important;
 }}
@@ -130,7 +127,6 @@ html, body, [class*="css"], .stApp {{
     color: white !important;
 }}
 
-/* 4. 메인 헤더 영역 (어두운 그라데이션이므로 흰색 고정) */
 .main-header {{
     background: {_header_gr};
     border-radius: 20px;
@@ -146,7 +142,6 @@ html, body, [class*="css"], .stApp {{
     z-index: 1;
 }}
 
-/* 5. 버튼 디자인 및 텍스트 고정 */
 .stButton > button {{
     background: {_btn_gr} !important;
     border: none !important;
@@ -158,7 +153,6 @@ html, body, [class*="css"], .stApp {{
     font-weight: 700 !important;
 }}
 
-/* 6. 탭 영역 디자인 */
 .stTabs [data-baseweb="tab-list"] {{
     background: {_tab_bg} !important;
     border-radius: 14px !important;
@@ -177,7 +171,6 @@ html, body, [class*="css"], .stApp {{
     color: {"white" if not _dark else "#F0F0F0"} !important;
 }}
 
-/* 7. 메트릭 컨테이너 세부 텍스트 매핑 */
 div[data-testid="metric-container"] {{
     background: var(--card) !important;
     border-radius: 14px !important;
@@ -192,7 +185,6 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"] > div {{
     color: var(--text) !important;
 }}
 
-/* 8. 입력 폼 텍스트 및 배경 */
 .stTextInput > div > div > input,
 .stTextArea > div > div > textarea {{
     background: {_input_bg} !important;
@@ -200,19 +192,16 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"] > div {{
     color: var(--text) !important;
 }}
 
-/* 9. 데이터프레임 다크모드 대응 */
 .stDataFrame, [data-testid="stTable"] {{ 
     background: var(--card) !important; 
 }}
 
-/* 10. 익스팬더(아코디언) 다크모드 대응 */
 {"" if not _dark else """
 .stExpander { background: #1E1E1E !important; border-color: #333333 !important; }
 .stExpander summary p, .stExpander summary span { color: #E0E0E0 !important; }
 """}
 </style>
 """, unsafe_allow_html=True)
-
 
 # ─────────────────────────────────────────────
 # 유틸리티 함수
@@ -229,9 +218,6 @@ def normalize_url(url: str) -> str:
         url = "https://" + url
     return url.rstrip("/")
 
-# ─────────────────────────────────────────────
-# 브랜드 변형 탐지
-# ─────────────────────────────────────────────
 def build_brand_variants(target_url: str, biz_info: dict) -> list[str]:
     domain      = extract_domain(target_url)
     brand_name  = biz_info.get("brand_name", "")
@@ -316,7 +302,7 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
     return round(lo, 1), round(hi, 1)
 
 # ─────────────────────────────────────────────
-# 데모 데이터 생성 (API 키 없이 보고용)
+# 데모 데이터 생성
 # ─────────────────────────────────────────────
 DEMO_SCENARIOS = {
     "naver.com": {
@@ -401,7 +387,6 @@ DEMO_STRATEGY = {
     ],
 }
 
-
 def get_demo_data(url: str) -> dict:
     domain = extract_domain(url).lower()
     for key in DEMO_SCENARIOS:
@@ -419,16 +404,12 @@ def get_demo_data(url: str) -> dict:
             comp["domain"] = extract_domain(url) if url else "your-site.com"
     return {"scenario": scenario, "strategy": strategy}
 
-
 # ─────────────────────────────────────────────
-# Jina Reader 기반 경쟁사 검색 컨텍스트 수집
+# Jina Reader / 크롤링 / API 파트
 # ─────────────────────────────────────────────
 def fetch_competitor_search_context(industry: str, brand: str, market_scope: str) -> str:
     scope_kw = "한국 국내" if "국내" in market_scope else "글로벌"
-    queries = [
-        f"{industry} 경쟁사 {scope_kw}",
-        f"{brand} 경쟁사 대안 서비스",
-    ]
+    queries = [f"{industry} 경쟁사 {scope_kw}", f"{brand} 경쟁사 대안 서비스"]
     collected = []
     headers = {"Accept": "text/markdown, text/plain, */*", "X-Return-Format": "markdown", "X-Timeout": "10"}
     for q in queries:
@@ -446,12 +427,7 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
     brand    = biz_info.get("brand_name", extract_domain(target_url))
     industry = biz_info.get("industry", "디지털 서비스")
     domain   = extract_domain(target_url)
-
-    scope_instruction = (
-        "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요. 해외 기업은 제외합니다."
-        if "국내" in market_scope else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요."
-    )
-
+    scope_instruction = "반드시 대한민국에서 서비스 중인 국내 기업만 포함하세요." if "국내" in market_scope else "전 세계 글로벌 시장에서 활동하는 기업을 포함하세요."
     search_context = fetch_competitor_search_context(industry, brand, market_scope)
     prompt = f"""당신은 디지털 마케팅 업계 전문 애널리스트입니다.
 아래 데이터를 바탕으로 실제 경쟁사를 분석하세요.
@@ -468,8 +444,7 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
             result_str = call_gpt(client_gpt, prompt, max_tokens=1000, model=model_gpt, temperature_override=0.2)
         elif client_gemini:
             result_str = call_gemini(client_gemini, prompt, max_tokens=1000, temperature_override=0.2)
-    except Exception:
-        pass
+    except Exception: pass
 
     competitors = []
     try:
@@ -477,13 +452,13 @@ def discover_competitors(client_gpt, client_gemini, biz_info: dict, target_url: 
         if json_match:
             raw = json.loads(json_match.group())
             competitors = [c for c in raw if c.get("domain", "").strip() and "competitor" not in c.get("domain", "").lower()]
-    except Exception:
-        pass
+    except Exception: pass
 
     if not competitors:
         competitors = [{"rank": i+1, "brand_name": f"경쟁사 {i+1}", "domain": f"comp{i+1}.com", "reason": "업계 경쟁사", "domain_valid": False} for i in range(n_competitors)]
     return competitors[:n_competitors]
 
+# [속도 개선] 경쟁사 SOV 병렬 처리 적용
 def run_sov_simulation(client_gpt, client_gemini, question: str, target_url: str,
                         competitor_list: list[dict], biz_info: dict, model_gpt: str, n: int = 30) -> dict:
     all_urls = [target_url] + [normalize_url(c.get("domain", "")) for c in competitor_list if c.get("domain", "").strip()]
@@ -491,29 +466,24 @@ def run_sov_simulation(client_gpt, client_gemini, question: str, target_url: str
 
     def _sim_one_brand(url: str, brand_variants: list[str]) -> dict:
         gpt_hits, gem_hits, gpt_ran, gem_ran = 0, 0, False, False
-
         def _gpt_batch():
             h = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
                 futs = [ex.submit(call_gpt, client_gpt, f"질문: {question}\n\n답변:", max_tokens=150, model=model_gpt, temperature_override=0.5) for _ in range(n)]
                 for f in concurrent.futures.as_completed(futs):
                     try:
-                        res = f.result(timeout=10)
-                        if any(v in res.lower() for v in brand_variants): h += 1
+                        if any(v in f.result(timeout=10).lower() for v in brand_variants): h += 1
                     except Exception: pass
             return h
-
         def _gem_batch():
             h = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
                 futs = [ex.submit(call_gemini, client_gemini, f"질문: {question}\n\n답변:", max_tokens=150, temperature_override=0.5) for _ in range(n)]
                 for f in concurrent.futures.as_completed(futs):
                     try:
-                        res = f.result(timeout=10)
-                        if any(v in res.lower() for v in brand_variants): h += 1
+                        if any(v in f.result(timeout=10).lower() for v in brand_variants): h += 1
                     except Exception: pass
             return h
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             f_gpt = ex.submit(_gpt_batch) if client_gpt else None
             f_gem = ex.submit(_gem_batch) if client_gemini else None
@@ -523,26 +493,28 @@ def run_sov_simulation(client_gpt, client_gemini, question: str, target_url: str
             if f_gem:
                 try: gem_hits = f_gem.result(timeout=max(60, n*2)); gem_ran = True
                 except Exception: pass
-
         gpt_rate = round(gpt_hits / n * 100, 1) if gpt_ran else None
         gem_rate = round(gem_hits / n * 100, 1) if gem_ran else None
         valid = [v for v in [gpt_rate, gem_rate] if v is not None]
         avg = round(sum(valid) / max(1, len(valid)), 1) if valid else 0
         ci_lo, ci_hi = calc_confidence_interval((gpt_hits if gpt_ran else 0) + (gem_hits if gem_ran else 0), (n if gpt_ran else 0) + (n if gem_ran else 0))
-        
         return {"gpt_rate": gpt_rate, "gem_rate": gem_rate, "avg_rate": avg, "ci_lo": ci_lo, "ci_hi": ci_hi}
 
-    sov_results = []
-    for i, (url, label) in enumerate(zip(all_urls, all_labels)):
-        brand_biz = biz_info if i == 0 else {"brand_name": label, "industry": biz_info.get("industry", "")}
-        res = _sim_one_brand(url, build_brand_variants(url, brand_biz))
-        res.update({"label": label, "domain": extract_domain(url), "is_target": (i == 0)})
-        sov_results.append(res)
-    return sov_results
+    sov_results = [None] * len(all_urls)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(all_urls)) as ex:
+        def _process(i, url, label):
+            brand_biz = biz_info if i == 0 else {"brand_name": label, "industry": biz_info.get("industry", "")}
+            res = _sim_one_brand(url, build_brand_variants(url, brand_biz))
+            res.update({"label": label, "domain": extract_domain(url), "is_target": (i == 0)})
+            return i, res
 
-# ─────────────────────────────────────────────
-# 사이트 크롤링 및 비즈니스 분석
-# ─────────────────────────────────────────────
+        futs = [ex.submit(_process, i, u, l) for i, (u, l) in enumerate(zip(all_urls, all_labels))]
+        for f in concurrent.futures.as_completed(futs):
+            i, res = f.result()
+            sov_results[i] = res
+
+    return [r for r in sov_results if r is not None]
+
 class _MetaParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -583,29 +555,19 @@ def analyze_business_identity(client_gpt, client_gemini, url: str, model_gpt: st
     meta = crawl_site_metadata(url)
     domain = extract_domain(url)
     domain_stem = domain.split(".")[0]
-
     prompt = f"""당신은 비즈니스 인텔리전스 전문가입니다. 사이트를 정밀 분석하세요.
 [도메인]: {domain}
 [크롤링]: {meta.get('title', '')} / {meta.get('description', '')}
-
-[지침]
-크롤링 데이터가 없어도 도메인명({domain})과 사전 지식으로 어떤 비즈니스를 하는지 명확한 업종명을 추론하세요. (예: avahair.co.kr -> 미용실 프랜차이즈)
+크롤링 데이터가 없어도 도메인명({domain})과 사전 지식으로 어떤 비즈니스를 하는지 추론하세요. (예: avahair.co.kr -> 미용실 프랜차이즈)
 JSON만 출력: {{"brand_name":"회사명", "industry":"실물 업종명", "industry_category":"대분류", "core_product":"핵심 서비스", "target_audience":"타겟층", "key_services":["A", "B"]}}"""
-
-    result_str = ""
     try:
-        if client_gpt: result_str = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt, temperature_override=0.2)
-        elif client_gemini: result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature_override=0.2)
-        
-        m = re.search(r'\{.*\}', result_str, re.DOTALL)
+        if client_gpt: res = call_gpt(client_gpt, prompt, max_tokens=600, model=model_gpt, temperature_override=0.2)
+        elif client_gemini: res = call_gemini(client_gemini, prompt, max_tokens=600, temperature_override=0.2)
+        m = re.search(r'\{.*\}', res, re.DOTALL)
         if m: return json.loads(m.group())
     except Exception: pass
-
     return {"brand_name": domain_stem.upper(), "industry": "비즈니스 서비스", "industry_category": "기타", "core_product": "서비스", "target_audience": "고객", "key_services": []}
 
-# ─────────────────────────────────────────────
-# API 호출
-# ─────────────────────────────────────────────
 def call_gpt(client, prompt: str, system: str = "", model: str = "gpt-4o-mini", max_tokens: int = 1500, temperature_override: float = 0.7) -> str:
     messages = [{"role": "system", "content": system}] if system else []
     messages.append({"role": "user", "content": prompt})
@@ -616,9 +578,6 @@ def call_gemini(model_obj, prompt: str, max_tokens: int = 1500, temperature_over
     res = model_obj.generate_content(prompt, generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens, temperature=temperature_override))
     return res.text.strip()
 
-# ─────────────────────────────────────────────
-# 질문 생성 & 시뮬레이션
-# ─────────────────────────────────────────────
 def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, model_gpt: str, model_gemini, biz_info: dict = None) -> list[str]:
     brand = biz_info.get("brand_name", extract_domain(url))
     industry = biz_info.get("industry", "서비스")
@@ -627,8 +586,7 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, 
     prompt = f"""당신은 {industry} 분야 마케터입니다.
 {brand}({product})의 실제 고객이 챗봇에 입력할 매우 구체적이고 현실적인 구매 여정 질문 5개를 창의적으로 도출하세요.
 뻔한 템플릿 질문 금지. 업계 실무 용어 및 구체적 상황을 포함하세요. 
-질문 안에 '{brand}'를 포함.
-다른 텍스트 없이 질문 5개만 한 줄씩 물음표로 끝나게 출력하세요."""
+질문 안에 '{brand}'를 포함. 다른 텍스트 없이 질문 5개만 한 줄씩 물음표로 끝나게 출력하세요."""
 
     res = ""
     try:
@@ -640,9 +598,7 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str, 
 
     qs = [re.sub(r'^[\d\.\-\*\[\]\s]+', '', q).strip() for q in res.split('\n') if '?' in q]
     qs = [q for q in qs if len(q) > 5][:5]
-    
-    if not qs:
-        qs = [f"{brand}의 {industry} 주요 서비스 특징은 무엇인가요?", f"{brand} 이용 시 비용 구조는 어떤가요?", f"{brand}의 실제 사용 후기는 어떤가요?"]
+    if not qs: qs = [f"{brand}의 {industry} 주요 서비스 특징은 무엇인가요?", f"{brand} 이용 시 비용 구조는 어떤가요?", f"{brand}의 실제 사용 후기는 어떤가요?"]
     return qs[:5]
 
 def simulate_single_gpt(client, question: str, url: str, model: str, bv: list) -> dict:
@@ -728,6 +684,7 @@ def run_all_simulations(client_gpt, client_gemini, questions: list[str], target_
             except Exception: results[fmap[f]] = {"gpt_rate": None, "gemini_rate": None, "avg_rate": 0, "gpt_hits": 0, "gemini_hits": 0, "total": n, "gpt_ci": (None, None), "gemini_ci": (None, None), "gpt_samples": [], "gemini_samples": []}
     return results
 
+# [속도 개선] 전략 분석 (4개 프롬프트) 병렬 처리 적용 
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini, biz_info: dict = None, market_scope: str = "글로벌") -> dict:
     domain, brand, industry = extract_domain(target_url), (biz_info or {}).get("brand_name", extract_domain(target_url)), (biz_info or {}).get("industry", "서비스")
@@ -746,17 +703,28 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
         except Exception: pass
         return ""
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        f_comp = ex.submit(_call, p_comp)
+        f_diag = ex.submit(_call, p_diag)
+        f_kw   = ex.submit(_call, p_kw)
+        f_geo  = ex.submit(_call, p_geo)
+
+        c_res = f_comp.result()
+        d_res = f_diag.result()
+        k_res = f_kw.result()
+        g_res = f_geo.result()
+
     comps = []
     try:
-        m = re.search(r'\[.*\]', _call(p_comp), re.DOTALL)
+        m = re.search(r'\[.*\]', c_res, re.DOTALL)
         if m: comps = json.loads(m.group())
     except Exception: pass
 
     return {
         "competitors": comps,
-        "diagnoses": [d.strip().lstrip("•-*") for d in _call(p_diag).split("\n") if d.strip()][:3],
-        "keywords": [k.strip().lstrip("•-*1234567890. ") for k in _call(p_kw).split("\n") if k.strip()][:5],
-        "geo_guides": [g.strip() for g in re.split(r'\n(?=\d+\.)', _call(p_geo)) if g.strip()][:3],
+        "diagnoses": [d.strip().lstrip("•-*") for d in d_res.split("\n") if d.strip()][:3],
+        "keywords": [k.strip().lstrip("•-*1234567890. ") for k in k_res.split("\n") if k.strip()][:5],
+        "geo_guides": [g.strip() for g in re.split(r'\n(?=\d+\.)', g_res) if g.strip()][:3],
     }
 
 # ─────────────────────────────────────────────
@@ -767,8 +735,6 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str):
     short_questions = [q[:18] + "…" if len(q) > 20 else q for q in questions]
 
     fig = go.Figure()
-    
-    # ── 다크/라이트 텍스트 컬러 변수 ──
     _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
     _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
 
@@ -1039,7 +1005,7 @@ with tab1:
                         render_strategy_analysis(strat, target_url)
 
 # ─────────────────────────────────────────────
-# Tab 2: 수동 분석형
+# Tab 2: 수동 분석형 [속도 병목 완벽 해결]
 # ─────────────────────────────────────────────
 with tab2:
     st.markdown("""
@@ -1055,20 +1021,48 @@ with tab2:
     url_manual = c_m1.text_input("🌐 사이트 URL", key="m_url")
     kw_manual = c_m2.text_input("🔍 메인 키워드 / 질문", key="m_kw")
     
-    if st.button("🔬 수동 검증 시작", use_container_width=True):
+    multi_keywords = st.text_area(
+        "📝 추가 키워드 (선택사항, 한 줄에 하나씩)",
+        placeholder="추가로 분석할 키워드를 입력하세요 (최대 4개)\n예:\n네이버 뉴스 서비스 설명\n네이버 쇼핑 기능",
+        height=100, key="m_multi"
+    )
+
+    if st.button("🔬 수동 검증 시작", type="primary", use_container_width=True):
         if url_manual and kw_manual and (gpt_ok or gemini_ok):
             t_url = normalize_url(url_manual)
-            with st.spinner("비즈니스 분석 및 시뮬레이션 중..."):
+            all_kws = [kw_manual.strip()]
+            if multi_keywords.strip():
+                all_kws.extend([k.strip() for k in multi_keywords.strip().split("\n") if k.strip()][:4])
+
+            with st.spinner("비즈니스 분석 중..."):
                 biz = analyze_business_identity(client_gpt, client_gemini, t_url, gpt_model, client_gemini)
+            
+            st.markdown(f"**분석 대상:** `{extract_domain(t_url)}` | **키워드:** {len(all_kws)}개 | **범위:** {market_scope}")
+
+            # [수동 분석 병렬 처리 적용] - 여러 키워드를 한 번에 시뮬레이션
+            with st.spinner(f"⚡ 키워드 {len(all_kws)}개 병렬 시뮬레이션 중... ({sim_count}회)"):
+                all_res = run_all_simulations(client_gpt, client_gemini, all_kws, t_url, gpt_model, client_gemini, sim_count, biz)
+            
+            render_bar_chart(all_res, all_kws, f"키워드별 인용 점유율")
+            
+            with st.spinner("경쟁사 SOV 분석 중... (메인 키워드 기준)"):
                 comps = discover_competitors(client_gpt, client_gemini, biz, t_url, market_scope, gpt_model, n_competitors)
-                res = run_simulation(client_gpt, client_gemini, kw_manual, t_url, gpt_model, client_gemini, sim_count, biz)
-            
-            render_bar_chart([res], [kw_manual], f"'{kw_manual}' 인용 점유율")
-            
-            with st.spinner("경쟁사 SOV 분석 중..."):
                 sov = run_sov_simulation(client_gpt, client_gemini, kw_manual, t_url, comps, biz, gpt_model, max(10, sim_count//3))
                 render_sov_chart(sov, f"[{market_scope}] 경쟁사 대비 SOV")
             
+            # 결과 요약 표
+            table_data = []
+            for kw, r in zip(all_kws, all_res):
+                valid = [v for v in [r.get('gpt_rate'), r.get('gemini_rate')] if v is not None]
+                avg = sum(valid) / len(valid) if valid else 0
+                table_data.append({
+                    "키워드": kw,
+                    "GPT": f"{r['gpt_rate']}%" if r.get('gpt_rate') is not None else "—",
+                    "Gemini": f"{r['gemini_rate']}%" if r.get('gemini_rate') is not None else "—",
+                    "평균": f"{avg:.1f}%",
+                })
+            st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+
             with st.spinner("전략 분석 중..."):
                 strat = run_strategy_analysis(client_gpt, client_gemini, kw_manual, t_url, gpt_model, client_gemini, biz, market_scope)
                 render_strategy_analysis(strat, t_url)
@@ -1091,32 +1085,16 @@ with tab3:
 
     col_h1, col_h2, col_h3 = st.columns([1.2, 1, 1.5])
     with col_h1:
-        brand_name = st.text_input(
-            "🏷️ 자사 브랜드명",
-            placeholder="예) 네이버, Coupang, MyBrand",
-            key="brand_name"
-        )
+        brand_name = st.text_input("🏷️ 자사 브랜드명", placeholder="예) 네이버, Coupang, MyBrand", key="brand_name")
     with col_h2:
-        uploaded_log = st.file_uploader(
-            "📂 로그 파일 업로드 (CSV)",
-            type=["csv"],
-            key="log_upload",
-            help="date, engine, count 컬럼을 포함한 CSV"
-        )
+        uploaded_log = st.file_uploader("📂 로그 파일 업로드 (CSV)", type=["csv"], key="log_upload", help="date, engine, count 컬럼 포함")
     with col_h3:
         today = datetime.date.today()
-        date_range = st.date_input(
-            "📆 분석 기간",
-            value=(today - datetime.timedelta(days=29), today),
-            key="date_range"
-        )
+        date_range = st.date_input("📆 분석 기간", value=(today - datetime.timedelta(days=29), today), key="date_range")
 
     col_hbtn1, col_hbtn2 = st.columns([2, 1])
-    with col_hbtn1:
-        run_history_real = st.button("📊 히스토리 분석", key="btn_history", use_container_width=True)
-    with col_hbtn2:
-        run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True,
-                                     help="샘플 데이터로 히스토리를 즉시 확인합니다")
+    with col_hbtn1: run_history_real = st.button("📊 히스토리 분석", key="btn_history", use_container_width=True)
+    with col_hbtn2: run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True)
 
     def generate_history_demo(brand: str, days: int = 30) -> pd.DataFrame:
         random.seed(42)
@@ -1149,27 +1127,19 @@ with tab3:
             st.warning("표시할 데이터가 없습니다.")
             return
 
-        pivot = df.pivot_table(index="date", columns="engine", values="count",
-                               aggfunc="sum", fill_value=0).reset_index()
+        pivot = df.pivot_table(index="date", columns="engine", values="count", aggfunc="sum", fill_value=0).reset_index()
         pivot = pivot.sort_values("date")
 
         engines_present = [e for e in ["ChatGPT", "Gemini", "Claude"] if e in pivot.columns]
-        colors = {"ChatGPT": "#111111" if not _dark else "#E0E0E0", "Gemini": "#555555", "Claude": "#999999"}
-
-        total_citations = int(df["count"].sum())
-        daily_totals = df.groupby("date")["count"].sum()
-        peak_date = daily_totals.idxmax() if not daily_totals.empty else "-"
-        peak_count = int(daily_totals.max()) if not daily_totals.empty else 0
-        unique_days = df["date"].nunique()
+        colors = {"ChatGPT": "#111111" if not st.session_state.get("dark_mode") else "#E0E0E0", "Gemini": "#555555", "Claude": "#999999"}
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("총 인용 횟수", f"{total_citations:,}회")
-        m2.metric("최다 인용 일자", peak_date, f"당일 {peak_count}회")
-        m3.metric("분석 일수", f"{unique_days}일")
+        m1.metric("총 인용 횟수", f"{int(df['count'].sum()):,}회")
+        daily_totals = df.groupby("date")["count"].sum()
+        m2.metric("최다 인용 일자", daily_totals.idxmax() if not daily_totals.empty else "-", f"당일 {int(daily_totals.max()) if not daily_totals.empty else 0}회")
+        m3.metric("분석 일수", f"{df['date'].nunique()}일")
         m4.metric("브랜드", brand if brand else "—")
-
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
         _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
         _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
@@ -1177,110 +1147,40 @@ with tab3:
         fig = go.Figure()
         for eng in engines_present:
             fig.add_trace(go.Bar(
-                name=eng,
-                x=pivot["date"],
-                y=pivot[eng],
-                marker_color=colors.get(eng, "#AAAAAA"),
-                text=pivot[eng].apply(lambda v: str(v) if v > 0 else ""),
-                textposition="inside",
-                textfont=dict(size=10, color="white" if eng != "ChatGPT" or _dark else "#111111"),
+                name=eng, x=pivot["date"], y=pivot[eng], marker_color=colors.get(eng, "#AAAAAA"),
+                text=pivot[eng].apply(lambda v: str(v) if v > 0 else ""), textposition="inside",
+                textfont=dict(size=10, color="white" if eng != "ChatGPT" or st.session_state.get("dark_mode") else "#111111")
             ))
 
         fig.update_layout(
-            barmode="stack",
-            title=dict(
-                text=f"{'[' + brand + '] ' if brand else ''}AI 엔진별 브랜드 인용 횟수 추이",
-                font=dict(size=16, color=_color_text, family="Plus Jakarta Sans"),
-                x=0,
-            ),
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Plus Jakarta Sans", color=_color_text),
-            xaxis=dict(
-                title="날짜",
-                tickangle=-35,
-                tickfont=dict(size=10),
-                gridcolor=_color_grid,
-                tickmode="auto",
-                nticks=20,
-            ),
-            yaxis=dict(
-                title="인용 횟수 (Count)",
-                gridcolor=_color_grid,
-                rangemode="tozero",
-            ),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02,
-                xanchor="right", x=1,
-                bgcolor="rgba(0,0,0,0)",
-                bordercolor=_color_grid,
-                borderwidth=1,
-                font=dict(size=12),
-            ),
-            margin=dict(t=70, b=60, l=55, r=20),
-            height=420,
-            bargap=0.18,
+            barmode="stack", title=dict(text=f"{'[' + brand + '] ' if brand else ''}AI 엔진별 브랜드 인용 횟수 추이", font=dict(size=16, color=_color_text), x=0),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Plus Jakarta Sans", color=_color_text),
+            xaxis=dict(title="날짜", tickangle=-35, tickfont=dict(size=10), gridcolor=_color_grid),
+            yaxis=dict(title="인용 횟수 (Count)", gridcolor=_color_grid, rangemode="tozero"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+            margin=dict(t=70, b=60, l=55, r=20), height=420, bargap=0.18
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### 📋 엔진별 인용 요약")
         summary_rows = []
         for eng in engines_present:
             sub = df[df["engine"] == eng]
-            summary_rows.append({
-                "AI 엔진": eng,
-                "총 인용 횟수": f"{int(sub['count'].sum()):,}회",
-                "일평균": f"{sub['count'].mean():.1f}회",
-                "최대 단일 일자": f"{int(sub['count'].max())}회",
-                "비중": f"{sub['count'].sum() / df['count'].sum() * 100:.1f}%",
-            })
+            summary_rows.append({"AI 엔진": eng, "총 인용 횟수": f"{int(sub['count'].sum()):,}회", "일평균": f"{sub['count'].mean():.1f}회", "최대 일자": f"{int(sub['count'].max())}회", "비중": f"{sub['count'].sum() / df['count'].sum() * 100:.1f}%"})
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-    trigger_history_demo = run_history_demo or st.session_state.get("run_demo_history", False)
-    if trigger_history_demo:
-        st.session_state["run_demo_history"] = False
-
+    if run_history_demo:
         demo_brand = brand_name.strip() if brand_name.strip() else "MyBrand"
         df_demo = generate_history_demo(demo_brand, days=30)
-
-        st.markdown(f"""
-        <div style="background:var(--bg2);border:1.5px dashed var(--border);
-        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
-            <span style="font-size:1.2rem;">🎬</span>
-            <div>
-                <span style="font-weight:700;color:var(--text);font-size:0.9rem;">데모 모드 — 최근 30일 가상 인용 데이터</span><br>
-                <span style="color:var(--text-muted);font-size:0.78rem;">
-                실제 로그 파일 없이 샘플 데이터를 시각화합니다. 브랜드: <b>{demo_brand}</b>
-                </span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown(f"""<div style="background:var(--bg2);border:1.5px dashed var(--border);border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;"><span style="font-size:1.2rem;">🎬</span><div><span style="font-weight:700;color:var(--text);font-size:0.9rem;">데모 모드 — 샘플 데이터 시각화</span><br><span style="color:var(--text-muted);font-size:0.78rem;">브랜드: <b>{demo_brand}</b></span></div></div>""", unsafe_allow_html=True)
         render_history_chart(df_demo, demo_brand)
 
     elif run_history_real:
-        if uploaded_log is None:
-            st.error("CSV 로그 파일을 업로드해주세요.")
+        if uploaded_log is None: st.error("CSV 로그 파일을 업로드해주세요.")
         else:
             brand_label = brand_name.strip() if brand_name.strip() else "브랜드"
-            dr = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (
-                today - datetime.timedelta(days=29), today)
+            dr = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (today - datetime.timedelta(days=29), today)
             df_real = parse_uploaded_log(uploaded_log, brand_label, dr)
-            if not df_real.empty:
-                render_history_chart(df_real, brand_label)
-
-    else:
-        st.markdown("""
-        <div style="text-align:center;padding:48px 20px;color:var(--text-muted);">
-            <div style="font-size:3rem;margin-bottom:12px;">📊</div>
-            <div style="font-size:1rem;font-weight:600;color:var(--text-muted);margin-bottom:6px;">
-            로그 파일을 업로드하거나 데모를 실행하세요
-            </div>
-            <div style="font-size:0.82rem;">
-            CSV 형식: <code>date, engine, count</code> 컬럼 포함
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            if not df_real.empty: render_history_chart(df_real, brand_label)
 
 # ─────────────────────────────────────────────
 # 푸터
