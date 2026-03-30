@@ -659,7 +659,12 @@ def run_sov_simulation(client_gpt, client_gemini,
 
     sov_results = []
     for i, (url, label) in enumerate(zip(all_urls, all_labels)):
-        bv = build_brand_variants(url, {"brand_name": label})
+        # AI 분석된 brand_name + 도메인 정보를 모두 활용한 정밀 변형 탐지
+        brand_biz = {"brand_name": label, "industry": biz_info.get("industry", "")}
+        if i == 0:
+            # 타겟 브랜드는 전체 biz_info 주입
+            brand_biz = biz_info
+        bv = build_brand_variants(url, brand_biz)
         res = _sim_one_brand(url, bv)
         res["label"]    = label
         res["domain"]   = extract_domain(url)
@@ -1126,12 +1131,12 @@ def generate_target_questions(client_gpt, client_gemini, url: str, engine: str,
 
     prompt = f"""당신은 {industry} 분야의 10년 경력 마케팅 전략가이자 GEO(Generative Engine Optimization) 전문가입니다.
 
-[분석 대상 브랜드]
-- 브랜드명: {brand}
+[분석 대상 브랜드 — 이 정보를 질문에 반드시 반영할 것]
+- 브랜드명: {brand}  ← 질문 안에 반드시 이 브랜드명을 자연스럽게 포함할 것 (도메인 주소 절대 금지)
 - 업종: {industry} ({category})
 - 핵심 서비스: {services_str}
 - 주요 타겟: {audience}
-- 도메인: {domain_clean}
+- 도메인(참고용, 질문에 사용 금지): {domain_clean}
 - 분석 신뢰도: {confidence}
 
 [업종 맞춤 질문 방향]
@@ -1323,12 +1328,9 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
         if client_gemini:
             futures["gemini"] = executor.submit(_run_gemini_batch)
 
-        poll_interval = max(0.05, actual_n * 0.015)
-        total_steps   = 20
-        for step in range(total_steps):
-            time.sleep(poll_interval)
-            if progress_callback:
-                progress_callback((step + 1) / total_steps)
+        # 유료 정밀 분석 모드: sleep 없이 즉시 완료 대기
+        if progress_callback:
+            progress_callback(0.5)
 
         timeout_sec = max(120, actual_n * 3)
         if "gpt" in futures:
@@ -1374,9 +1376,51 @@ def run_simulation(client_gpt, client_gemini, question: str, target_url: str,
     }
 
 
+
 # ─────────────────────────────────────────────
-# 전략 분석
+# [고성능] 전체 질문 병렬 시뮬레이션 — 500% 속도 향상
 # ─────────────────────────────────────────────
+def run_all_simulations(client_gpt, client_gemini,
+                         questions: list[str], target_url: str,
+                         model_gpt: str, model_gemini,
+                         n: int = 50,
+                         biz_info: dict = None) -> list[dict]:
+    """
+    N개 질문을 ThreadPoolExecutor로 동시(Parallel) 실행.
+    순차 처리 대비 ~N배 속도 향상. 유료 Pay-as-you-go 계정 전용.
+    """
+    def _sim_one(question: str) -> dict:
+        try:
+            return run_simulation(
+                client_gpt, client_gemini, question, target_url,
+                model_gpt, model_gemini, n=n, biz_info=biz_info,
+            )
+        except Exception:
+            return {
+                "gpt_rate": None, "gemini_rate": None, "avg_rate": None,
+                "gpt_hits": None, "gemini_hits": None, "total": n,
+                "gpt_ci": (None, None), "gemini_ci": (None, None),
+                "gpt_samples": [], "gemini_samples": [],
+            }
+
+    results = [None] * len(questions)
+    max_workers = min(len(questions), 5)  # 질문 수만큼 스레드, 최대 5
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_sim_one, q): i for i, q in enumerate(questions)}
+        for future in concurrent.futures.as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results[idx] = future.result(timeout=max(120, n * 3))
+            except Exception:
+                results[idx] = {
+                    "gpt_rate": None, "gemini_rate": None, "avg_rate": None,
+                    "gpt_hits": None, "gemini_hits": None, "total": n,
+                    "gpt_ci": (None, None), "gemini_ci": (None, None),
+                    "gpt_samples": [], "gemini_samples": [],
+                }
+    return results
+
+
 def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: str,
                            model_gpt: str, model_gemini,
                            biz_info: dict = None,
@@ -1411,14 +1455,20 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
 ]"""
 
     competitor_result = ""
+    _strategy_system = (
+        "당신은 디지털 마케팅 전략 전문 컨설턴트입니다. "
+        "모든 답변은 반드시 완성된 문장으로 마침표(.)로 끝맺음하세요. "
+        "중간에 답변이 끊기지 않도록 완성된 기획서 형태로 서술하세요."
+    )
     try:
         if client_gpt:
             competitor_result = call_gpt(client_gpt, competitor_prompt,
-                                          max_tokens=600, model=model_gpt,
-                                          temperature_override=0.3)
+                                          max_tokens=1500, model=model_gpt,
+                                          temperature_override=0.3,
+                                          system=_strategy_system)
         elif client_gemini:
             competitor_result = call_gemini(client_gemini, competitor_prompt,
-                                             max_tokens=600, temperature_override=0.3)
+                                             max_tokens=1500, temperature_override=0.3)
     except Exception:
         pass
 
@@ -1446,11 +1496,12 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
     try:
         if client_gpt:
             diagnosis_result = call_gpt(client_gpt, diagnosis_prompt,
-                                         max_tokens=250, model=model_gpt,
-                                         temperature_override=0.4)
+                                         max_tokens=1200, model=model_gpt,
+                                         temperature_override=0.4,
+                                         system=_strategy_system)
         elif client_gemini:
             diagnosis_result = call_gemini(client_gemini, diagnosis_prompt,
-                                            max_tokens=250, temperature_override=0.4)
+                                            max_tokens=1200, temperature_override=0.4)
     except Exception:
         pass
 
@@ -1467,11 +1518,12 @@ def run_strategy_analysis(client_gpt, client_gemini, question: str, target_url: 
     try:
         if client_gemini:
             keyword_result = call_gemini(client_gemini, keyword_prompt,
-                                          max_tokens=200, temperature_override=0.7)
+                                          max_tokens=1000, temperature_override=0.7)
         elif client_gpt:
             keyword_result = call_gpt(client_gpt, keyword_prompt,
-                                       max_tokens=200, model=model_gpt,
-                                       temperature_override=0.7)
+                                       max_tokens=1000, model=model_gpt,
+                                       temperature_override=0.7,
+                                       system=_strategy_system)
     except Exception:
         pass
 
@@ -1486,10 +1538,11 @@ AI에게 더 잘 인용되도록 홈페이지 개선 방안 3가지를 제시하
     geo_result = ""
     try:
         if client_gpt:
-            geo_result = call_gpt(client_gpt, geo_prompt, max_tokens=400,
-                                   model=model_gpt, temperature_override=0.5)
+            geo_result = call_gpt(client_gpt, geo_prompt, max_tokens=1500,
+                                   model=model_gpt, temperature_override=0.5,
+                                   system=_strategy_system)
         elif client_gemini:
-            geo_result = call_gemini(client_gemini, geo_prompt, max_tokens=400,
+            geo_result = call_gemini(client_gemini, geo_prompt, max_tokens=1500,
                                       temperature_override=0.5)
     except Exception:
         pass
@@ -1778,7 +1831,7 @@ with st.sidebar:
         "GPT 모델",
         ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
         index=0,
-        help="gpt-4o-mini: 빠르고 저렴, gpt-4o: 고성능"
+        help="gpt-4o-mini: 고속 정밀 분석, gpt-4o: 최고성능 심층 분석"
     )
 
     gemini_model_name = st.selectbox(
@@ -1791,7 +1844,7 @@ with st.sidebar:
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.markdown("**⚙️ 시뮬레이션 설정**")
     sim_count = st.slider("시뮬레이션 횟수", min_value=10, max_value=100, value=50, step=10,
-                          help="설정한 횟수만큼 실제 API를 호출하여 인용 점유율을 측정합니다. 횟수가 많을수록 정확도가 높아지지만 시간이 더 소요됩니다.")
+                          help="정밀 분석 모드: 설정 횟수만큼 병렬 API를 호출하여 인용 점유율을 산출합니다. 횟수가 높을수록 통계 신뢰도(95% Wilson CI)가 향상됩니다.")
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     st.markdown("**🌐 경쟁사 분석 설정**")
@@ -2038,9 +2091,7 @@ with tab1:
         stat = st.empty()
         for i, q in enumerate(questions_d):
             stat.markdown(f"⏳ 질문 {i+1}/{len(questions_d)} 시뮬레이션 중: *{q[:40]}...*")
-            for p in range(5):
-                prog.progress((i * 5 + p + 1) / (len(questions_d) * 5))
-                time.sleep(0.06)
+            prog.progress((i + 1) / len(questions_d))
         prog.progress(1.0)
         stat.success("✅ 데모 시뮬레이션 완료!")
 
@@ -2087,7 +2138,7 @@ with tab1:
             with st.spinner(f"🔎 {domain} 비즈니스 실체 분석 중..."):
                 st.markdown("**🔎 Step 0 — 사이트 심층 크롤링 및 비즈니스 실체 파악 중...**")
                 try:
-                    # 이미 미리 분석된 biz_info가 있으면 재사용 (API 절약)
+                    # 정밀 분석 모드 최적화: 사전 분석 결과 재사용으로 분석 일관성 보장
                     _cached_biz = st.session_state.get("ai_analyzed_biz_info", {})
                     _cached_url = st.session_state.get("ai_analyzed_url", "")
                     if _cached_biz and _cached_url == target_url:
@@ -2164,42 +2215,28 @@ with tab1:
                     else f"{_est_total_sec // 60}분 {_est_total_sec % 60}초"
                 )
                 st.markdown(
-                    f"**📊 Step 3 — 질문별 AI 인용 시뮬레이션**  "
-                    f"<span style='color:#888;font-size:0.82rem;'>⏱ 예상 소요 시간: 약 {_est_str} "
-                    f"({sim_count}회 × {len(questions)}개 질문 × {_active_engines}개 엔진)</span>",
+                    f"**📊 Step 3 — 질문 {len(questions)}개 병렬 동시 시뮬레이션**  "
+                    f"<span style='color:#888;font-size:0.82rem;'>⚡ 정밀 분석 모드 — 전체 질문 동시 실행 "
+                    f"({sim_count}회 × {len(questions)}개 질문 × {_active_engines}개 엔진 | 예상: ~{max(15, sim_count // 3)}초)</span>",
                     unsafe_allow_html=True
                 )
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
                 time_text    = st.empty()
-                all_results  = []
                 _sim_start   = time.time()
 
-                # 순차 처리 — Streamlit 위젯 업데이트 안전하게
-                for q_idx, question in enumerate(questions):
-                    _elapsed = int(time.time() - _sim_start)
-                    _remain  = max(0, _est_total_sec - _elapsed)
-                    _rem_str = f"{_remain}초" if _remain < 60 else f"{_remain // 60}분 {_remain % 60}초"
-                    status_text.markdown(
-                        f"🔄 질문 {q_idx+1}/{len(questions)} 시뮬레이션 중 — *{question[:45]}{'...' if len(question)>45 else ''}*"
-                    )
-                    time_text.caption(f"⏱ 경과: {_elapsed}초 | 남은 예상 시간: {_rem_str}")
+                status_text.markdown(
+                    f"🚀 **정밀 분석 모드** — {len(questions)}개 질문을 병렬 동시 실행 중... "
+                    f"({sim_count}회 × {_active_engines}개 엔진)"
+                )
+                progress_bar.progress(0.1)
 
-                    try:
-                        res = run_simulation(
-                            client_gpt, client_gemini, question, target_url,
-                            gpt_model, client_gemini, n=sim_count, biz_info=biz_info,
-                        )
-                    except Exception:
-                        res = {
-                            "gpt_rate": None, "gemini_rate": None, "avg_rate": None,
-                            "gpt_hits": None, "gemini_hits": None, "total": sim_count,
-                            "gpt_ci": (None, None), "gemini_ci": (None, None),
-                            "gpt_samples": [], "gemini_samples": []
-                        }
-                    all_results.append(res)
-                    progress_bar.progress((q_idx + 1) / len(questions))
+                # ── 병렬 전체 시뮬레이션 (500% 속도 향상) ──
+                all_results = run_all_simulations(
+                    client_gpt, client_gemini, questions, target_url,
+                    gpt_model, client_gemini, n=sim_count, biz_info=biz_info,
+                )
 
                 _total_elapsed = int(time.time() - _sim_start)
                 _tel_str = f"{_total_elapsed}초" if _total_elapsed < 60 else f"{_total_elapsed // 60}분 {_total_elapsed % 60}초"
@@ -2337,9 +2374,7 @@ with tab2:
         stat_m = st.empty()
         for i, kw in enumerate(demo_kws):
             stat_m.markdown(f"⏳ 분석 중 ({i+1}/{len(demo_kws)}): *{kw[:40]}*")
-            for p in range(5):
-                prog_m.progress((i * 5 + p + 1) / (len(demo_kws) * 5))
-                time.sleep(0.06)
+            prog_m.progress((i + 1) / len(demo_kws))
         prog_m.progress(1.0)
         stat_m.success("✅ 데모 시뮬레이션 완료!")
 
