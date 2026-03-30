@@ -5,16 +5,12 @@ import hashlib
 import concurrent.futures
 import difflib
 from datetime import datetime
-from dotenv import load_dotenv
 import streamlit as st
 from openai import OpenAI
 
 # =========================
-# 🔐 환경 설정
+# 📁 설정
 # =========================
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 REPORT_DIR = "reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 
@@ -43,9 +39,25 @@ def cached_llm_call(call_fn, prompt: str, model: str, ttl=3600):
         return ""
 
 # =========================
+# 🔐 API KEY UI
+# =========================
+st.sidebar.title("🔐 API 설정")
+
+api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+
+if api_key:
+    st.session_state["api_key"] = api_key
+
+# =========================
 # 🤖 GPT 호출
 # =========================
 def call_gpt_safe(prompt, model="gpt-4o-mini"):
+    if "api_key" not in st.session_state:
+        st.error("API 키를 입력하세요.")
+        return ""
+
+    client = OpenAI(api_key=st.session_state["api_key"])
+
     def _call(p):
         res = client.chat.completions.create(
             model=model,
@@ -63,14 +75,12 @@ def call_gpt_safe(prompt, model="gpt-4o-mini"):
 def build_variants(domain: str, brand: str):
     base = domain.split(".")[0]
 
-    variants = set([
+    return list(set([
         base.lower(),
         domain.lower(),
         brand.lower(),
         brand.replace(" ", "").lower()
-    ])
-
-    return list(variants)
+    ]))
 
 def is_brand_mentioned(text: str, variants: list[str], threshold=0.75):
     text = text.lower()
@@ -90,10 +100,9 @@ def is_brand_mentioned(text: str, variants: list[str], threshold=0.75):
 # ❓ 질문 생성
 # =========================
 def generate_questions(brand, industry):
-    prompt = f"{industry} 분야에서 {brand} 관련 실제 질문 5개 생성"
+    prompt = f"{industry} 분야에서 {brand} 관련 질문 5개 생성"
     res = call_gpt_safe(prompt)
-    qs = [q.strip("- ").strip() for q in res.split("\n") if "?" in q]
-    return qs[:5]
+    return [q.strip("- ").strip() for q in res.split("\n") if "?" in q][:5]
 
 # =========================
 # 🧪 시뮬레이션
@@ -122,13 +131,12 @@ def run_simulation(question, domain, brand, n=20):
     return {"hits": hits, "total": n, "rate": rate}
 
 # =========================
-# 🧠 전략 분석
+# 🧠 전략
 # =========================
 def run_strategy(question, brand):
     prompts = {
         "진단": f"{brand}이 '{question}'에서 약한 이유 3가지",
-        "키워드": f"{brand} 관련 블루오션 키워드 5개",
-        "콘텐츠": f"{question} 콘텐츠 전략 3가지"
+        "키워드": f"{brand} 관련 키워드 5개",
     }
 
     results = {}
@@ -148,7 +156,7 @@ def run_strategy(question, brand):
     return results
 
 # =========================
-# 💾 결과 저장
+# 💾 저장
 # =========================
 def save_report(data):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -160,27 +168,22 @@ def save_report(data):
     return filename
 
 # =========================
-# 📄 텍스트 리포트 생성
+# 📄 텍스트 리포트
 # =========================
 def generate_text_report(data):
     lines = []
     lines.append(f"브랜드: {data['brand']}")
-    lines.append(f"도메인: {data['domain']}")
     lines.append("="*40)
 
     for item in data["results"]:
-        lines.append(f"\n[질문] {item['question']}")
+        lines.append(f"\nQ: {item['question']}")
         lines.append(f"점유율: {item['simulation']['rate']}%")
-
-        for k, v in item["strategy"].items():
-            lines.append(f"\n{ k }:\n{ v }")
 
     return "\n".join(lines)
 
 # =========================
 # 🎨 UI
 # =========================
-st.set_page_config(page_title="AI SEO Analyzer", layout="wide")
 st.title("🚀 AI SEO 분석기")
 
 brand = st.text_input("브랜드명", "OpenAI")
@@ -190,6 +193,10 @@ industry = st.text_input("산업", "AI")
 run = st.button("분석 시작")
 
 if run:
+    if "api_key" not in st.session_state:
+        st.error("API 키 먼저 입력하세요.")
+        st.stop()
+
     report_data = {
         "brand": brand,
         "domain": domain,
@@ -219,13 +226,8 @@ if run:
 
         st.divider()
 
-    # 💾 저장
     filepath = save_report(report_data)
-    st.success(f"저장 완료: {filepath}")
+    st.success(f"저장됨: {filepath}")
 
-    # 📥 다운로드
-    json_str = json.dumps(report_data, ensure_ascii=False, indent=2)
-    st.download_button("📥 JSON 다운로드", json_str, file_name="report.json")
-
-    text_report = generate_text_report(report_data)
-    st.download_button("📄 텍스트 리포트 다운로드", text_report, file_name="report.txt")
+    st.download_button("📥 JSON 다운로드", json.dumps(report_data, ensure_ascii=False, indent=2))
+    st.download_button("📄 TXT 다운로드", generate_text_report(report_data))
