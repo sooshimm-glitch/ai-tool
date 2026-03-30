@@ -62,9 +62,6 @@ if _dark:
     _tab_sel   = "#333333"
     _progress  = "linear-gradient(90deg,#555555,#888888)"
     _btn_gr    = "linear-gradient(135deg,#333333,#555555)"
-    
-    _plot_text = "#F0F0F0"
-    _plot_grid = "#333333"
 else:
     _bg        = "#F5F5F5"
     _bg2       = "#EEEEEE"
@@ -84,9 +81,6 @@ else:
     _tab_sel   = "#111111"
     _progress  = "linear-gradient(90deg,#111111,#555555)"
     _btn_gr    = "linear-gradient(135deg,#111111,#444444)"
-    
-    _plot_text = "#111111"
-    _plot_grid = "#DDDDDD"
 
 st.markdown(f"""
 <style>
@@ -322,7 +316,7 @@ def calc_confidence_interval(hits: int, n: int, confidence: float = 0.95) -> tup
     return round(lo, 1), round(hi, 1)
 
 # ─────────────────────────────────────────────
-# 데모 데이터 (보고용) - (누락되었던 부분 복구!)
+# 데모 데이터 생성 (API 키 없이 보고용)
 # ─────────────────────────────────────────────
 DEMO_SCENARIOS = {
     "naver.com": {
@@ -407,6 +401,7 @@ DEMO_STRATEGY = {
     ],
 }
 
+
 def get_demo_data(url: str) -> dict:
     domain = extract_domain(url).lower()
     for key in DEMO_SCENARIOS:
@@ -423,6 +418,7 @@ def get_demo_data(url: str) -> dict:
         if "target-site" in comp["domain"]:
             comp["domain"] = extract_domain(url) if url else "your-site.com"
     return {"scenario": scenario, "strategy": strategy}
+
 
 # ─────────────────────────────────────────────
 # Jina Reader 기반 경쟁사 검색 컨텍스트 수집
@@ -771,15 +767,17 @@ def render_bar_chart(results: list[dict], questions: list[str], title: str):
     short_questions = [q[:18] + "…" if len(q) > 20 else q for q in questions]
 
     fig = go.Figure()
+    
+    # ── 다크/라이트 텍스트 컬러 변수 ──
     _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
     _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
 
     if any(r.get("gpt_rate") is not None for r in results):
         y_vals = [r.get("gpt_rate") or 0 for r in results]
-        fig.add_trace(go.Bar(name="GPT", x=short_questions, y=y_vals, marker=dict(color="#111111" if not _dark else "#E0E0E0", line=dict(color="#000000", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
+        fig.add_trace(go.Bar(name="GPT", x=short_questions, y=y_vals, marker=dict(color="#111111" if not st.session_state.get("dark_mode") else "#E0E0E0", line=dict(color="#000000", width=1)), text=[f"{v}%" if v is not None else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
     if any(r.get("gemini_rate") is not None for r in results):
         y_vals = [r.get("gemini_rate") or 0 for r in results]
-        fig.add_trace(go.Bar(name="Gemini", x=short_questions, y=y_vals, marker=dict(color="#888888", line=dict(color="#666666", width=1)), text=[f"{v}%" if v else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
+        fig.add_trace(go.Bar(name="Gemini", x=short_questions, y=y_vals, marker=dict(color="#888888", line=dict(color="#666666", width=1)), text=[f"{v}%" if v is not None else "" for v in y_vals], textposition="outside", textfont=dict(size=11, color=_color_text, family="Plus Jakarta Sans")))
 
     fig.update_layout(
         title=dict(text=title, font=dict(size=16, color=_color_text, family="Plus Jakarta Sans"), x=0),
@@ -796,10 +794,10 @@ def render_sov_chart(sov_results: list[dict], title: str):
     if not sov_results: return
     labels = [r["label"] for r in sov_results]
     avgs = [r.get("avg_rate", 0) for r in sov_results]
+    
     _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
     _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
-
-    colors = ["#111111" if not _dark else "#E0E0E0" if r.get("is_target") else "#AAAAAA" for r in sov_results]
+    colors = ["#111111" if not st.session_state.get("dark_mode") else "#E0E0E0" if r.get("is_target") else "#AAAAAA" for r in sov_results]
 
     fig = go.Figure(go.Bar(x=avgs, y=labels, orientation="h", marker_color=colors, text=[f"{v:.1f}%" for v in avgs], textposition="outside", textfont=dict(size=12, color=_color_text)))
     fig.update_layout(
@@ -1081,7 +1079,208 @@ with tab2:
 # Tab 3: AI 인용 히스토리
 # ─────────────────────────────────────────────
 with tab3:
-    st.info("로그 파일을 업로드하여 AI 엔진별 브랜드 누적 인용 횟수를 시각화합니다.")
+    st.markdown("""
+    <div class="result-card" style="background:var(--card);border-color:var(--border);">
+        <h4 style="color:var(--text);margin-bottom:6px;">📅 AI 엔진별 브랜드 인용 히스토리</h4>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin:0;line-height:1.6;">
+        로그 파일을 업로드하거나 데모 데이터를 실행하면, Gemini · ChatGPT · Claude 각 엔진이
+        선택 기간 동안 자사 브랜드를 인용한 횟수를 <b>누적 막대그래프</b>로 시각화합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_h1, col_h2, col_h3 = st.columns([1.2, 1, 1.5])
+    with col_h1:
+        brand_name = st.text_input(
+            "🏷️ 자사 브랜드명",
+            placeholder="예) 네이버, Coupang, MyBrand",
+            key="brand_name"
+        )
+    with col_h2:
+        uploaded_log = st.file_uploader(
+            "📂 로그 파일 업로드 (CSV)",
+            type=["csv"],
+            key="log_upload",
+            help="date, engine, count 컬럼을 포함한 CSV"
+        )
+    with col_h3:
+        today = datetime.date.today()
+        date_range = st.date_input(
+            "📆 분석 기간",
+            value=(today - datetime.timedelta(days=29), today),
+            key="date_range"
+        )
+
+    col_hbtn1, col_hbtn2 = st.columns([2, 1])
+    with col_hbtn1:
+        run_history_real = st.button("📊 히스토리 분석", key="btn_history", use_container_width=True)
+    with col_hbtn2:
+        run_history_demo = st.button("🎬 데모 실행", key="btn_history_demo", use_container_width=True,
+                                     help="샘플 데이터로 히스토리를 즉시 확인합니다")
+
+    def generate_history_demo(brand: str, days: int = 30) -> pd.DataFrame:
+        random.seed(42)
+        engines = ["ChatGPT", "Gemini", "Claude"]
+        rows = []
+        base_date = datetime.date.today() - datetime.timedelta(days=days - 1)
+        for d in range(days):
+            dt = base_date + datetime.timedelta(days=d)
+            for eng in engines:
+                base = {"ChatGPT": 12, "Gemini": 9, "Claude": 6}[eng]
+                count = max(0, int(random.gauss(base, 3.5)))
+                rows.append({"date": dt.strftime("%Y-%m-%d"), "engine": eng, "count": count})
+        return pd.DataFrame(rows)
+
+    def parse_uploaded_log(file, brand: str, date_range) -> pd.DataFrame:
+        df = pd.read_csv(file)
+        df.columns = [c.strip().lower() for c in df.columns]
+        if "date" not in df.columns or "engine" not in df.columns or "count" not in df.columns:
+            st.error("CSV에 'date', 'engine', 'count' 컬럼이 필요합니다.")
+            return pd.DataFrame()
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        if len(date_range) == 2:
+            start = date_range[0].strftime("%Y-%m-%d")
+            end   = date_range[1].strftime("%Y-%m-%d")
+            df = df[(df["date"] >= start) & (df["date"] <= end)]
+        return df
+
+    def render_history_chart(df: pd.DataFrame, brand: str):
+        if df.empty:
+            st.warning("표시할 데이터가 없습니다.")
+            return
+
+        pivot = df.pivot_table(index="date", columns="engine", values="count",
+                               aggfunc="sum", fill_value=0).reset_index()
+        pivot = pivot.sort_values("date")
+
+        engines_present = [e for e in ["ChatGPT", "Gemini", "Claude"] if e in pivot.columns]
+        colors = {"ChatGPT": "#111111" if not _dark else "#E0E0E0", "Gemini": "#555555", "Claude": "#999999"}
+
+        total_citations = int(df["count"].sum())
+        daily_totals = df.groupby("date")["count"].sum()
+        peak_date = daily_totals.idxmax() if not daily_totals.empty else "-"
+        peak_count = int(daily_totals.max()) if not daily_totals.empty else 0
+        unique_days = df["date"].nunique()
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 인용 횟수", f"{total_citations:,}회")
+        m2.metric("최다 인용 일자", peak_date, f"당일 {peak_count}회")
+        m3.metric("분석 일수", f"{unique_days}일")
+        m4.metric("브랜드", brand if brand else "—")
+
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+        _color_text = "#F0F0F0" if st.session_state.get("dark_mode") else "#111111"
+        _color_grid = "#333333" if st.session_state.get("dark_mode") else "#DDDDDD"
+
+        fig = go.Figure()
+        for eng in engines_present:
+            fig.add_trace(go.Bar(
+                name=eng,
+                x=pivot["date"],
+                y=pivot[eng],
+                marker_color=colors.get(eng, "#AAAAAA"),
+                text=pivot[eng].apply(lambda v: str(v) if v > 0 else ""),
+                textposition="inside",
+                textfont=dict(size=10, color="white" if eng != "ChatGPT" or _dark else "#111111"),
+            ))
+
+        fig.update_layout(
+            barmode="stack",
+            title=dict(
+                text=f"{'[' + brand + '] ' if brand else ''}AI 엔진별 브랜드 인용 횟수 추이",
+                font=dict(size=16, color=_color_text, family="Plus Jakarta Sans"),
+                x=0,
+            ),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Plus Jakarta Sans", color=_color_text),
+            xaxis=dict(
+                title="날짜",
+                tickangle=-35,
+                tickfont=dict(size=10),
+                gridcolor=_color_grid,
+                tickmode="auto",
+                nticks=20,
+            ),
+            yaxis=dict(
+                title="인용 횟수 (Count)",
+                gridcolor=_color_grid,
+                rangemode="tozero",
+            ),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="right", x=1,
+                bgcolor="rgba(0,0,0,0)",
+                bordercolor=_color_grid,
+                borderwidth=1,
+                font=dict(size=12),
+            ),
+            margin=dict(t=70, b=60, l=55, r=20),
+            height=420,
+            bargap=0.18,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### 📋 엔진별 인용 요약")
+        summary_rows = []
+        for eng in engines_present:
+            sub = df[df["engine"] == eng]
+            summary_rows.append({
+                "AI 엔진": eng,
+                "총 인용 횟수": f"{int(sub['count'].sum()):,}회",
+                "일평균": f"{sub['count'].mean():.1f}회",
+                "최대 단일 일자": f"{int(sub['count'].max())}회",
+                "비중": f"{sub['count'].sum() / df['count'].sum() * 100:.1f}%",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    trigger_history_demo = run_history_demo or st.session_state.get("run_demo_history", False)
+    if trigger_history_demo:
+        st.session_state["run_demo_history"] = False
+
+        demo_brand = brand_name.strip() if brand_name.strip() else "MyBrand"
+        df_demo = generate_history_demo(demo_brand, days=30)
+
+        st.markdown(f"""
+        <div style="background:var(--bg2);border:1.5px dashed var(--border);
+        border-radius:14px;padding:14px 20px;margin:12px 0;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:1.2rem;">🎬</span>
+            <div>
+                <span style="font-weight:700;color:var(--text);font-size:0.9rem;">데모 모드 — 최근 30일 가상 인용 데이터</span><br>
+                <span style="color:var(--text-muted);font-size:0.78rem;">
+                실제 로그 파일 없이 샘플 데이터를 시각화합니다. 브랜드: <b>{demo_brand}</b>
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        render_history_chart(df_demo, demo_brand)
+
+    elif run_history_real:
+        if uploaded_log is None:
+            st.error("CSV 로그 파일을 업로드해주세요.")
+        else:
+            brand_label = brand_name.strip() if brand_name.strip() else "브랜드"
+            dr = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (
+                today - datetime.timedelta(days=29), today)
+            df_real = parse_uploaded_log(uploaded_log, brand_label, dr)
+            if not df_real.empty:
+                render_history_chart(df_real, brand_label)
+
+    else:
+        st.markdown("""
+        <div style="text-align:center;padding:48px 20px;color:var(--text-muted);">
+            <div style="font-size:3rem;margin-bottom:12px;">📊</div>
+            <div style="font-size:1rem;font-weight:600;color:var(--text-muted);margin-bottom:6px;">
+            로그 파일을 업로드하거나 데모를 실행하세요
+            </div>
+            <div style="font-size:0.82rem;">
+            CSV 형식: <code>date, engine, count</code> 컬럼 포함
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # 푸터
