@@ -164,8 +164,42 @@ div[data-testid="metric-container"] * {{ color:var(--text) !important; }}
 .share-badge-high {{ display:inline-block; background:linear-gradient(135deg,#10B981,#059669); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
 .share-badge-mid  {{ display:inline-block; background:linear-gradient(135deg,#F59E0B,#D97706); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
 .share-badge-low  {{ display:inline-block; background:linear-gradient(135deg,#EF4444,#DC2626); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.cost-badge {{ background:rgba(16,185,129,.15); border:1px solid #10B981; color:#059669; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
-.cache-badge {{ background:rgba(99,102,241,.15); border:1px solid #6366F1; color:#4F46E5; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
+/* 라이트 모드에서도 배지 글자가 보이도록 색상 고정 */
+.cost-badge {{ background:rgba(16,185,129,.15); border:1px solid #10B981; color:#059669 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
+.cache-badge {{ background:rgba(99,102,241,.15); border:1px solid #6366F1; color:#4F46E5 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
+/* 인라인 카드 — 라이트/다크 공용 */
+.inline-card {{
+  background:var(--card); border:1px solid var(--border);
+  border-radius:10px; padding:11px 16px; margin:5px 0;
+  display:flex; align-items:center; gap:12px; color:var(--text);
+}}
+.inline-card .q-text {{ font-size:.9rem; color:var(--text); font-weight:500; flex:1; }}
+/* 전략 분석 카드 */
+.strategy-item {{
+  background:var(--card); border-radius:12px; padding:14px 16px;
+  margin:8px 0; border:1px solid var(--border);
+}}
+.strategy-item span {{ font-size:.85rem; color:var(--text); }}
+.blue-ocean-item {{
+  background:var(--bg2); border-radius:12px; padding:12px 16px;
+  margin:8px 0; border:1px solid var(--border);
+  display:flex; align-items:center; gap:10px;
+}}
+.blue-ocean-item .label {{
+  background:linear-gradient(135deg,#111,#444); color:white;
+  padding:3px 10px; border-radius:20px; font-size:.75rem; font-weight:700;
+}}
+.blue-ocean-item .kw {{ font-size:.88rem; color:var(--text); font-weight:600; }}
+.geo-guide-item {{
+  background:var(--card); border-radius:14px; padding:18px 20px;
+  margin:10px 0; border:1px solid var(--border);
+  box-shadow:0 2px 12px rgba(0,0,0,.06);
+}}
+.geo-guide-item .geo-text {{ margin:0; font-size:.88rem; color:var(--text); line-height:1.8; word-break:keep-all; white-space:normal; }}
+/* 히스토리 탭 안내 텍스트 */
+.hist-empty {{ text-align:center; padding:48px; color:var(--text-muted); }}
+/* 푸터 */
+.app-footer {{ text-align:center; padding:20px; color:var(--text-muted); font-size:.8rem; border-top:1px solid var(--border); }}
 {"" if not _dark else """
 .stMarkdown,.stMarkdown p,.stMarkdown li {{ color:#E0E0E0 !important; }}
 .stSelectbox>div>div {{ background:#252525 !important; color:#E0E0E0 !important; }}
@@ -279,10 +313,10 @@ def render_strategy(strategy: dict, target_url: str):
             <div style="width:28px;height:28px;border-radius:8px;
             background:{'linear-gradient(135deg,#111,#444)' if is_t else '#CCC'};
             color:white;font-weight:700;font-size:.8rem;display:flex;align-items:center;justify-content:center;">{r}</div>
-            <span style="font-weight:{'700' if is_t else '500'};color:#111;font-size:.9rem;">
-            {b} <span style="color:#888;font-size:.78rem;">({d})</span>{lbl}{pb}</span>
+            <span style="font-weight:{'700' if is_t else '500'};color:var(--text);font-size:.9rem;">
+            {b} <span style="color:var(--text-muted);font-size:.78rem;">({d})</span>{lbl}{pb}</span>
           </div>
-          <span style="color:#666;font-size:.8rem;">{reason}</span>
+          <span style="color:var(--text-muted);font-size:.8rem;">{reason}</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -295,19 +329,16 @@ def render_strategy(strategy: dict, target_url: str):
         for i, d in enumerate(strategy.get("diagnoses", [])):
             col = ["#111", "#555", "#888"][i % 3]
             st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:14px 16px;margin:8px 0;
-            border-left:4px solid {col};border:1px solid #E2E8F0;">
-              <span style="font-size:.85rem;color:#374151;">{'❌⚡🔧'[i]} {d}</span>
+            <div class="strategy-item" style="border-left:4px solid {col};">
+              <span>{'❌⚡🔧'[i]} {d}</span>
             </div>""", unsafe_allow_html=True)
     with c2:
         st.markdown("### 🌊 블루오션 키워드")
         for kw in strategy.get("keywords", []):
             st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#F5F5F5,#EEE);border-radius:12px;
-            padding:12px 16px;margin:8px 0;border:1px solid #CCC;display:flex;align-items:center;gap:10px;">
-              <span style="background:linear-gradient(135deg,#111,#444);color:white;
-              padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;">NEW</span>
-              <span style="font-size:.88rem;color:#111;font-weight:600;">{kw}</span>
+            <div class="blue-ocean-item">
+              <span class="label">NEW</span>
+              <span class="kw">{kw}</span>
             </div>""", unsafe_allow_html=True)
 
     st.markdown("### 📋 GEO 최적화 가이드")
@@ -316,13 +347,12 @@ def render_strategy(strategy: dict, target_url: str):
         g_html = _re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', g)
         g_html = g_html.replace('\n', '<br>')
         st.markdown(f"""
-        <div style="background:white;border-radius:14px;padding:18px 20px;margin:10px 0;
-        border:1px solid #E2E8F0;box-shadow:0 2px 12px rgba(37,99,235,.06);">
+        <div class="geo-guide-item">
           <div style="display:flex;gap:12px;align-items:flex-start;">
             <div style="min-width:30px;height:30px;border-radius:8px;flex-shrink:0;
             background:linear-gradient(135deg,#111,#444);color:white;font-weight:800;
             font-size:.85rem;display:flex;align-items:center;justify-content:center;">{i+1}</div>
-            <div style="margin:0;font-size:.88rem;color:#374151;line-height:1.8;word-break:keep-all;white-space:normal;">{g_html}</div>
+            <div class="geo-text">{g_html}</div>
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -514,13 +544,16 @@ with tab1:
     with col_u:
         url_auto = st.text_input("🌐 사이트 URL", placeholder="예) naver.com", key="url_auto")
     with col_i:
+        # key와 value를 동시에 쓰면 rerun 시 위젯이 사라지는 버그 발생.
+        # session_state 키만 사용하고 value= 는 제거한다.
+        if "industry_widget" not in st.session_state:
+            st.session_state["industry_widget"] = st.session_state.get("industry_display", "")
         manual_industry = st.text_input(
             "🏭 업종 확인·수정",
-            value=st.session_state["industry_display"],
             placeholder="AI 자동 분석 → 직접 수정 가능",
             key="industry_widget",
         )
-        st.session_state["industry_display"] = manual_industry
+        st.session_state["industry_display"] = st.session_state["industry_widget"]
 
     c_pre, c_run, c_demo = st.columns([1, 2, 1])
     with c_pre:
@@ -571,6 +604,7 @@ with tab1:
                     biz = _pre_state.biz_info
                     cr  = _pre_state.crawl_result
                     st.session_state["industry_display"] = biz.industry
+                    st.session_state["industry_widget"] = biz.industry   # ← rerun 후 위젯 유지
                     st.session_state["pre_pipeline_state"] = {
                         "url": _pre_url,
                         "biz": biz.to_dict(),
@@ -611,12 +645,11 @@ with tab1:
 
         for i, q in enumerate(dd["scenario"]["questions"], 1):
             st.markdown(f"""
-            <div style="background:white;border-radius:10px;padding:11px 16px;margin:5px 0;
-            border:1px solid #E2E8F0;display:flex;align-items:center;gap:12px;">
+            <div class="inline-card">
               <span style="background:linear-gradient(135deg,#333,#666);color:white;
               min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:.8rem;
               display:flex;align-items:center;justify-content:center;">{i}</span>
-              <span style="font-size:.9rem;color:#111;font-weight:500;">{q}</span>
+              <span class="q-text">{q}</span>
             </div>""", unsafe_allow_html=True)
 
         render_bar_chart(dd["scenario"]["results"], dd["scenario"]["questions"],
@@ -771,12 +804,11 @@ with tab1:
                     else "#EF4444"
                 )
                 st.markdown(f"""
-                <div style="background:white;border-radius:10px;padding:11px 16px;margin:5px 0;
-                border:1px solid #E2E8F0;display:flex;align-items:center;gap:12px;">
+                <div class="inline-card">
                   <span style="background:linear-gradient(135deg,#111,#444);color:white;
                   min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:.8rem;
                   display:flex;align-items:center;justify-content:center;">{i}</span>
-                  <span style="font-size:.9rem;color:#111;font-weight:500;flex:1;">{q}</span>
+                  <span class="q-text">{q}</span>
                   <span style="font-size:.75rem;font-weight:700;color:{score_color};white-space:nowrap;">
                   Q{cf_result['score']}</span>
                 </div>""", unsafe_allow_html=True)
@@ -1145,9 +1177,9 @@ with tab3:
                 render_hist(df_r, brand_h.strip())
     else:
         st.markdown("""
-        <div style="text-align:center;padding:48px;color:#AAA;">
+        <div class="hist-empty">
           <div style="font-size:3rem;margin-bottom:12px;">📊</div>
-          <div style="font-size:1rem;font-weight:600;color:#888;">CSV 업로드 또는 데모를 실행하세요</div>
+          <div style="font-size:1rem;font-weight:600;">CSV 업로드 또는 데모를 실행하세요</div>
           <div style="font-size:.82rem;margin-top:6px;">컬럼 형식: date, engine, count</div>
         </div>""", unsafe_allow_html=True)
 
@@ -1156,6 +1188,6 @@ with tab3:
 # ─────────────────────────────────────────────
 st.markdown("<div style='height:40px'></div>", unsafe_allow_html=True)
 st.markdown("""
-<div style="text-align:center;padding:20px;color:#888;font-size:.8rem;border-top:1px solid #DDD;">
+<div class="app-footer">
   🔍 AI Citation Analyzer v2.0 — 문맥 인식 탐지 · TTL 캐싱 · 3단계 크롤러 · 비용 추적
 </div>""", unsafe_allow_html=True)
