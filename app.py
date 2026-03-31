@@ -40,6 +40,11 @@ from core.pipeline import (
     content_filter, citation_spot_check,
     render_debug_panel,
 )
+from core.demo_data import (
+    DEMO_SCENARIOS, DEMO_STRATEGY,
+    POSITION_COLORS, DIAGNOSE_ICONS, FP_RISK_ICONS,
+    score_color as _score_color,
+)
 
 logger = get_logger("app")
 
@@ -109,8 +114,17 @@ html, body {{ background-color:{_bg} !important; color:{_text} !important; }}
 .stApp, .stApp > * {{ background:{_bg} !important; }}
 .main .block-container {{ background:{_bg} !important; }}
 
-/* ── 폰트 & 기본 글자색 — Streamlit 내부 전체 덮어쓰기 ── */
-*, *::before, *::after {{ font-family:'Plus Jakarta Sans',sans-serif !important; }}
+/* ── 폰트 & 기본 글자색 — Streamlit 사용자 노출 요소만 지정 ── */
+body, .stApp, .main, .block-container,
+.stMarkdown, .stMarkdown *,
+.stTextInput, .stTextArea, .stSelectbox,
+.stButton, .stButton button,
+[data-testid="stText"],
+[data-testid="stWidgetLabel"],
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] * {{
+  font-family:'Plus Jakarta Sans',sans-serif !important;
+}}
 
 /* Streamlit이 쓰는 모든 텍스트 노드 색상 강제 적용 */
 .stApp p, .stApp span, .stApp div,
@@ -138,7 +152,7 @@ div[data-testid="metric-container"] [data-testid="stMetricLabel"] span {{
 }}
 div[data-testid="metric-container"] [data-testid="stMetricValue"],
 div[data-testid="metric-container"] [data-testid="stMetricValue"] * {{
-  color:{_text} !important; font-size:1.6rem !important; font-weight:800 !important;
+  color:{_text} !important; font-weight:700 !important;
 }}
 /* 델타(↑↓) — 라이트 모드에서 배경색 제거하고 글자만 */
 div[data-testid="metric-container"] [data-testid="stMetricDelta"],
@@ -375,12 +389,12 @@ def render_bar_chart(results: list, questions: list[str], title: str = "AI 엔�
 
     all_vals = [v for v in gpt_rates + gemini_rates if v is not None]
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color="#111", family="Plus Jakarta Sans"), x=0),
+        title=dict(text=title, font=dict(size=16, color=_text, family="Plus Jakarta Sans"), x=0),
         barmode="group", bargap=0.25,
-        plot_bgcolor="rgba(245,245,245,.8)", paper_bgcolor="white",
-        font=dict(family="Plus Jakarta Sans", color="#111"),
-        xaxis=dict(tickfont=dict(size=11), gridcolor="#DDD"),
-        yaxis=dict(title="인용 점유율 (%)", ticksuffix="%", gridcolor="#DDD",
+        plot_bgcolor=_bg2, paper_bgcolor=_card,
+        font=dict(family="Plus Jakarta Sans", color=_text),
+        xaxis=dict(tickfont=dict(size=11), gridcolor=_border),
+        yaxis=dict(title="인용 점유율 (%)", ticksuffix="%", gridcolor=_border,
                    range=[0, max(max(all_vals, default=0) + 15, 20)]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=60, b=40, l=50, r=20), height=380,
@@ -392,11 +406,6 @@ def render_strategy(strategy: dict, target_url: str):
     domain = extract_domain(target_url)
 
     st.markdown("### 🏆 AI 인용 경쟁 현황 (TOP 10)")
-    pos_colors = {
-        "업계1위": "#10B981", "업계 1위": "#10B981",
-        "신흥강자": "#F59E0B", "신흥 강자": "#F59E0B",
-        "틈새전문": "#6366F1", "틈새 전문": "#6366F1",
-    }
     for comp in strategy.get("competitors", [])[:10]:
         r = comp.get("rank", "?")
         d = comp.get("domain", "")
@@ -407,7 +416,7 @@ def render_strategy(strategy: dict, target_url: str):
         bg = "linear-gradient(135deg,#EEE,#E0E0E0)" if is_t else "#F8F8F8"
         bd = "#111" if is_t else "#DDD"
         lbl = " ← 내 사이트" if is_t else ""
-        pc = pos_colors.get(pos, "#888")
+        pc = POSITION_COLORS.get(pos, "#888")
         pb = (f'<span style="background:{pc};color:white;padding:2px 8px;border-radius:20px;'
               f'font-size:.72rem;font-weight:700;margin-left:8px;">{pos}</span>' if pos else "")
         st.markdown(f"""
@@ -432,9 +441,10 @@ def render_strategy(strategy: dict, target_url: str):
         st.markdown("### 🔬 인용 실패 원인 진단")
         for i, d in enumerate(strategy.get("diagnoses", [])):
             col = ["#111", "#555", "#888"][i % 3]
+            icon = DIAGNOSE_ICONS[i % len(DIAGNOSE_ICONS)]
             st.markdown(f"""
             <div class="strategy-item" style="border-left:4px solid {col};">
-              <span>{'❌⚡🔧'[i]} {d}</span>
+              <span>{icon} {d}</span>
             </div>""", unsafe_allow_html=True)
     with c2:
         st.markdown("### 🌊 블루오션 키워드")
@@ -464,49 +474,12 @@ def render_strategy(strategy: dict, target_url: str):
 # ─────────────────────────────────────────────
 # 데모 데이터
 # ─────────────────────────────────────────────
-_DEMO = {
-    "naver.com": {
-        "questions": ["국내 최고 포털 사이트는?", "한국어 지도 서비스 추천", "블로그 플랫폼 비교", "네이버 쇼핑 vs 쿠팡", "뉴스 검색 사이트"],
-        "results":   [{"gpt_rate":58,"gemini_rate":62},{"gpt_rate":44,"gemini_rate":51},
-                      {"gpt_rate":22,"gemini_rate":18},{"gpt_rate":31,"gemini_rate":27},
-                      {"gpt_rate":39,"gemini_rate":43}],
-    },
-    "coupang.com": {
-        "questions": ["가장 빠른 배송 쇼핑몰?", "로켓배송 당일 수령 가능?", "쿠팡 vs 네이버쇼핑", "로켓와우 멤버십 혜택", "신선식품 새벽배송"],
-        "results":   [{"gpt_rate":71,"gemini_rate":68},{"gpt_rate":65,"gemini_rate":59},
-                      {"gpt_rate":38,"gemini_rate":42},{"gpt_rate":52,"gemini_rate":48},
-                      {"gpt_rate":29,"gemini_rate":33}],
-    },
-    "default": {
-        "questions": ["이 서비스의 주요 특징은?", "경쟁 서비스 대비 장점?", "초보자도 사용 가능한가요?", "가격 정책은?", "고객 지원 방법은?"],
-        "results":   [{"gpt_rate":7,"gemini_rate":5},{"gpt_rate":4,"gemini_rate":8},
-                      {"gpt_rate":12,"gemini_rate":9},{"gpt_rate":3,"gemini_rate":6},
-                      {"gpt_rate":15,"gemini_rate":11}],
-    },
-}
-
-_DEMO_STRATEGY = {
-    "competitors": [
-        {"rank":1,"domain":"wikipedia.org","brand_name":"Wikipedia","reason":"중립적 참조 정보","position":"업계1위"},
-        {"rank":2,"domain":"namu.wiki","brand_name":"나무위키","reason":"한국어 위키","position":"신흥강자"},
-        {"rank":3,"domain":"tistory.com","brand_name":"티스토리","reason":"SEO 블로그","position":"틈새전문"},
-        {"rank":4,"domain":"brunch.co.kr","brand_name":"브런치","reason":"전문가 롱폼","position":"틈새전문"},
-        {"rank":5,"domain":"medium.com","brand_name":"Medium","reason":"영문 고품질","position":"신흥강자"},
-    ],
-    "diagnoses":  ["구조화 데이터 마크업 부재로 AI 맥락 파악 어려움","FAQ 섹션 없어 Q&A 기반 인용 기회 손실","핵심 키워드 밀도 경쟁사 대비 40% 낮음"],
-    "keywords":   ["AI 인용 최적화 전략 2025","GEO 적용 방법","챗봇 검색 브랜드 노출","LLM 친화적 콘텐츠","AI 답변 출처 선택 조건"],
-    "geo_guides": ["1. FAQ 블록 추가\n홈페이지에 Q&A 형식 서비스 설명 섹션을 추가하세요.",
-                   "2. 구조화 데이터 적용\nJSON-LD로 Organization, FAQPage 스키마를 삽입하세요.",
-                   "3. 핵심 가치 제안 최상단 배치\n명확한 정의 문장으로 AI가 권위 출처로 인식하게 하세요."],
-}
-
-
 def get_demo(url: str) -> dict:
     domain = extract_domain(url).lower()
-    for k, v in _DEMO.items():
+    for k in DEMO_SCENARIOS:
         if k != "default" and k in domain:
-            return {"scenario": v, "strategy": _DEMO_STRATEGY}
-    return {"scenario": _DEMO["default"], "strategy": _DEMO_STRATEGY}
+            return {"scenario": DEMO_SCENARIOS[k], "strategy": DEMO_STRATEGY}
+    return {"scenario": DEMO_SCENARIOS["default"], "strategy": DEMO_STRATEGY}
 
 
 # ─────────────────────────────────────────────
@@ -890,7 +863,7 @@ with tab1:
             spot = pipeline_state.spot_check
             if spot:
                 fp_risk = spot.get("false_positive_risk", "unknown")
-                fp_color = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(fp_risk, "⚪")
+                fp_color = FP_RISK_ICONS.get(fp_risk, "⚪")
                 st.markdown(
                     f"**🎯 Citation 정확도 Spot-Check** "
                     f"| 초기 추정: `{spot['hit_rate']}%` "
@@ -916,11 +889,7 @@ with tab1:
             st.markdown(f"**📝 타겟 질문 {len(questions)}개 (Content Filter 통과)**")
             for i, q in enumerate(questions, 1):
                 cf_result = content_filter(q, biz_info.brand_name)
-                score_color = (
-                    "#10B981" if cf_result["score"] >= 70
-                    else "#F59E0B" if cf_result["score"] >= 40
-                    else "#EF4444"
-                )
+                score_color = _score_color(cf_result["score"])
                 st.markdown(f"""
                 <div class="inline-card">
                   <span style="background:linear-gradient(135deg,#111,#444);color:white;
@@ -1134,30 +1103,19 @@ with tab2:
                     st.success(f"✅ 경쟁사 {len(comp_m)}개 도출")
                     save_cache()
 
-            # 시뮬레이션
+            # 시뮬레이션 — 병렬 실행 (run_all_simulations)
             all_results_m: list[SimResult] = []
             prog_m2 = st.progress(0)
             stat_m2 = st.empty()
 
-            for idx, kw in enumerate(all_kw):
-                stat_m2.markdown(f"🔄 ({idx+1}/{len(all_kw)}): *{kw[:50]}*")
-                with CaptureError(f"sim_kw_{idx}", log_level="warning") as ctx_s:
-                    r = run_simulation(
-                        client_gpt, client_gemini, kw, target_url_m,
-                        model_gpt=gpt_model, n=sim_count,
-                        biz_info=biz_m.to_dict(),
-                        tracker=tracker,
-                    )
-                    all_results_m.append(r)
-                if not ctx_s.ok:
-                    st.warning(f"'{kw}' 오류: {ctx_s.error}")
-                    all_results_m.append(SimResult(
-                        gpt_rate=None, gemini_rate=None, avg_rate=None,
-                        gpt_hits=None, gemini_hits=None, n=sim_count,
-                        gpt_ci=(None, None), gemini_ci=(None, None),
-                    ))
-                prog_m2.progress((idx+1)/len(all_kw))
-
+            stat_m2.markdown(f"병렬 실행 중... ({len(all_kw)}개 키워드)")
+            all_results_m = run_all_simulations(
+                client_gpt, client_gemini, all_kw, target_url_m,
+                model_gpt=gpt_model, n=sim_count,
+                biz_info=biz_m.to_dict(),
+                tracker=tracker,
+                use_cache=True,
+            )
             prog_m2.progress(1.0)
             stat_m2.success("✅ 완료!")
             save_cache()
@@ -1267,10 +1225,10 @@ with tab3:
             ))
         fig.update_layout(
             barmode="stack", title=f"{'['+brand+'] ' if brand else ''}AI 엔진별 인용 추이",
-            plot_bgcolor="rgba(245,245,245,.8)", paper_bgcolor="white",
+            plot_bgcolor=_bg2, paper_bgcolor=_card,
             font=dict(family="Plus Jakarta Sans"), height=420,
-            xaxis=dict(tickangle=-35, gridcolor="#EEE"),
-            yaxis=dict(gridcolor="#EEE"),
+            xaxis=dict(tickangle=-35, gridcolor=_border),
+            yaxis=dict(gridcolor=_border),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(t=60, b=60, l=55, r=20),
         )
