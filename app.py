@@ -32,9 +32,10 @@ from core.ai_client import (
 )
 from core.biz_analysis import (
     analyze_business, discover_competitors,
-    generate_target_questions, run_strategy_analysis,
     BusinessInfo, Competitor,
 )
+from core.question_generator import generate_target_questions
+from core.strategy_analyzer import run_strategy_analysis
 from core.pipeline import (
     run_pipeline, PipelineState,
     content_filter, citation_spot_check,
