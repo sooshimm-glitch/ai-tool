@@ -24,20 +24,21 @@ import concurrent.futures as cf
 from dataclasses import dataclass, field
 from typing import Optional
 
-from core.logger import get_logger, CaptureError
-from core.cache import get_cache
-from core.crawler import crawl, crawl_search, CrawlResult
-from core.citation import (
+from .logger import get_logger, CaptureError
+from .cache import get_cache
+from .crawler import crawl, crawl_search, CrawlResult
+from .citation import (
     build_brand_variants, detect_citation, CitationResult, wilson_ci
 )
-from core.ai_client import call_gpt, call_gemini, CostTracker
-from core.biz_analysis import (
+from .ai_client import call_gpt, call_gemini, CostTracker
+from .biz_analysis import (
     BusinessInfo, Competitor,
-    _CATEGORY_HINTS, _QUESTION_SYSTEM,
     discover_competitors,
 )
-from core.industry_classifier import _BIZ_SYSTEM, _build_classify_prompt
-from core.schemas import _BAD_INDUSTRIES
+from .question_generator import _CATEGORY_HINTS, _QUESTION_SYSTEM
+from .industry_classifier import _BIZ_SYSTEM, _build_classify_prompt
+from .prompts import BIZ_INDUSTRY_RETRY_TMPL, QUESTION_GEN_AUTO_TMPL
+from .schemas import _BAD_INDUSTRIES
 
 # 호환성 래퍼 — pipeline.py가 기대하는 시그니처로 변환
 def _build_biz_prompt(domain: str, crawl_result, search_ctx: str) -> str:
@@ -297,23 +298,13 @@ def analyze_business_from_crawl(
     if biz_dict:
         industry = biz_dict.get("industry", "")
         is_vague = any(bad in industry.lower() for bad in _BAD_INDUSTRIES)
-        if is_vague and (crawl_result.body_text or search_ctx):
+        _body = crawl_result.body_text if crawl_result else ""
+        if is_vague and (_body or search_ctx):
             retry_ctx = (
-                f"사이트 본문: {crawl_result.body_text[:800]}\n"
-                f"검색 보완: {search_ctx[:500]}"
-                if crawl_result else search_ctx[:1000]
+                f"사이트 본문: {_body[:800]}\n검색 보완: {search_ctx[:500]}"
+                if _body else search_ctx[:1000]
             )
-            retry_p = f"""도메인 "{domain}"의 업종을 아래 실제 콘텐츠로 정확히 분류하세요.
-
-{retry_ctx}
-
-키워드가 있으면 분류 기준:
-- 광고/마케팅 키워드 → "퍼포먼스 마케팅 광고대행사" 류
-- 쇼핑/상품 키워드 → "온라인 쇼핑몰" 류
-- SaaS/B2B 키워드 → "B2B SaaS [기능]" 류
-- 교육 키워드 → "온라인 교육 플랫폼" 류
-
-JSON만 출력: {{"industry": "구체적 업종명"}}"""
+            retry_p = BIZ_INDUSTRY_RETRY_TMPL.format(domain=domain, retry_ctx=retry_ctx)
             with CaptureError("biz_industry_retry", log_level="warning"):
                 r2 = (call_gpt(client_gpt, retry_p, max_tokens=80, model=model_gpt, temperature=0.1)
                       if client_gpt else
@@ -395,35 +386,17 @@ def generate_questions_from_state(
     )
     services_str = ", ".join(biz.key_services) if biz.key_services else biz.core_product
 
-    prompt = f"""당신은 {biz.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
-
-[분석 대상 — 실제 사이트 분석 결과]
-- 브랜드명: {biz.brand_name}  ← 질문에 반드시 이 이름을 자연스럽게 포함
-- 업종: {biz.industry} ({biz.industry_category})
-- 핵심 서비스: {services_str}
-- 주요 타겟: {biz.target_audience}
-- 사이트 실제 키워드: {site_keywords if site_keywords else "(크롤 데이터 없음)"}
-- 크롤 품질: Tier{biz.crawl_tier} / 신뢰도 {biz.confidence}
-
-[질문 방향]
-{category_hint}
-
-[생성 규칙 — 엄격 준수]
-1. "{biz.brand_name}"이 AI 답변에서 인용될 가능성이 가장 높은 질문 유형으로 생성
-2. 위 "사이트 실제 키워드"를 질문 소재로 적극 활용 (실제 사이트 서비스 반영)
-3. 구매 결정 5단계(인지→비교→신뢰→가격→전환)를 각각 다룰 것
-4. {biz.industry} 전문 용어·지표·관행 적극 활용
-5. "~는 무엇인가요?", "~를 소개해주세요" 금지
-6. 구체적 수치·비교·상황 포함 필수
-
-[품질 기준 — 이 기준을 충족해야 질문으로 인정]
-✅ 브랜드명 포함
-✅ 비교/수치/사례/비용 중 하나 이상 포함
-✅ 실제 구매·도입 맥락에서 나올 법한 질문
-❌ 단순 정보 탐색형 (역사, 소개, 설명 등)
-❌ 도메인 주소 포함
-
-번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
+    prompt = QUESTION_GEN_AUTO_TMPL.format(
+        industry=biz.industry,
+        brand_name=biz.brand_name,
+        industry_category=biz.industry_category,
+        services_str=services_str,
+        target_audience=biz.target_audience,
+        site_keywords_str=site_keywords if site_keywords else "(크롤 데이터 없음)",
+        crawl_tier=biz.crawl_tier,
+        confidence=biz.confidence,
+        category_hint=category_hint,
+    )
 
     result_str = ""
     with CaptureError("question_gen", log_level="warning") as ctx:
@@ -664,13 +637,9 @@ def run_pipeline(
 
     # 경쟁사 병렬 실행 (biz 완료 후, question gen과 동시에)
     _cb("competitors", f"[{market_scope}] 경쟁사 분석 중...")
-    comp_future = None
-    executor = cf.ThreadPoolExecutor(max_workers=2)
-
-    comp_future = executor.submit(_do_competitors)
 
     # ──────────────────────────────────────────
-    # Step 3: 질문 생성 (crawl + biz 모두 활용)
+    # Step 3: 질문 생성 + 경쟁사 도출 (병렬)
     # ──────────────────────────────────────────
     _cb("questions", "크롤 데이터 기반 타겟 질문 도출 중...")
     t0 = time.time()
@@ -684,21 +653,25 @@ def run_pipeline(
             state.questions = cached_q
             _cb("questions", f"캐시 히트: {len(state.questions)}개")
 
-    if not state.questions:
-        state.questions = generate_questions_from_state(
-            client_gpt, client_gemini, state,
-            model_gpt=model_gpt, engine=q_engine,
-        )
-        if use_cache and state.questions:
-            cache.set(q_cache_key, state.questions, namespace="biz")
+    comp_future = None
+    with cf.ThreadPoolExecutor(max_workers=2) as executor:
+        comp_future = executor.submit(_do_competitors)
+
+        if not state.questions:
+            state.questions = generate_questions_from_state(
+                client_gpt, client_gemini, state,
+                model_gpt=model_gpt, engine=q_engine,
+            )
+            if use_cache and state.questions:
+                cache.set(q_cache_key, state.questions, namespace="biz")
+    # executor.__exit__ → shutdown(wait=True): comp_future 완료 보장
 
     state.record_time("question_gen", time.time() - t0)
     _cb("questions", f"완료: {len(state.questions)}개 질문 (content filter 통과)")
 
-    # 경쟁사 결과 수집
+    # 경쟁사 결과 수집 (이미 완료된 future에서 즉시 반환)
     with CaptureError("comp_collect", log_level="warning") as ctx:
-        state.competitors = comp_future.result(timeout=60)
-    executor.shutdown(wait=False)
+        state.competitors = comp_future.result(timeout=5) if comp_future else []
     if not ctx.ok:
         state.errors.append(f"competitors: {ctx.error}")
         state.competitors = []
@@ -713,19 +686,32 @@ def run_pipeline(
         brand_variants = build_brand_variants(url, state.biz_info.to_dict())
         first_q = state.questions[0]
 
-        spot = citation_spot_check(
-            client_gpt, client_gemini,
-            brand_variants=brand_variants,
-            question=first_q,
-            model_gpt=model_gpt,
-            n_samples=5,
-            tracker=tracker,
+        spot_cache_key = cache.make_key(
+            "spot_check", url, first_q, ",".join(sorted(brand_variants))
         )
-        state.spot_check = spot
-        state.record_time("spot_check", time.time() - t0)
-        state.log("spot_check", spot)
-        _cb("spot_check",
-            f"완료 | 초기 점유율: {spot['hit_rate']}% | FP 리스크: {spot['false_positive_risk']}")
+        cached_spot = cache.get(spot_cache_key) if use_cache else None
+
+        if cached_spot:
+            state.spot_check = cached_spot
+            state.record_time("spot_check", 0)
+            _cb("spot_check",
+                f"캐시 히트 | 초기 점유율: {cached_spot['hit_rate']}% | FP: {cached_spot['false_positive_risk']}")
+        else:
+            spot = citation_spot_check(
+                client_gpt, client_gemini,
+                brand_variants=brand_variants,
+                question=first_q,
+                model_gpt=model_gpt,
+                n_samples=5,
+                tracker=tracker,
+            )
+            state.spot_check = spot
+            if use_cache:
+                cache.set(spot_cache_key, spot, namespace="spot_check")
+            state.record_time("spot_check", time.time() - t0)
+            state.log("spot_check", spot)
+            _cb("spot_check",
+                f"완료 | 초기 점유율: {spot['hit_rate']}% | FP 리스크: {spot['false_positive_risk']}")
 
     return state
 
