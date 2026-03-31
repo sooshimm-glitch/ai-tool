@@ -18,16 +18,16 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlparse
 
-from core.logger import get_logger, CaptureError
-from core.crawler import crawl, crawl_search
-from core.text_processing import extract_business_text
-from core.industry_classifier import classify_industry
-from core.competitor_finder import discover_competitors
-from core.schemas import BusinessInfo, Competitor
+from .logger import get_logger, CaptureError
+from .crawler import crawl, crawl_search
+from .text_processing import extract_business_text
+from .industry_classifier import classify_industry
+from .competitor_finder import discover_competitors
+from .schemas import BusinessInfo, Competitor
 
 # ── 역할 분리된 모듈 re-export (app.py / pipeline.py import 경로 유지) ──
-from core.question_generator import generate_target_questions
-from core.strategy_analyzer import run_strategy_analysis
+from .question_generator import generate_target_questions
+from .strategy_analyzer import run_strategy_analysis
 
 logger = get_logger("biz_analysis")
 
