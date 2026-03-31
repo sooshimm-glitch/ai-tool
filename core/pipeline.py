@@ -33,10 +33,16 @@ from core.citation import (
 from core.ai_client import call_gpt, call_gemini, CostTracker
 from core.biz_analysis import (
     BusinessInfo, Competitor,
-    _build_biz_prompt, _BIZ_SYSTEM,
-    _BAD_INDUSTRIES, _CATEGORY_HINTS, _QUESTION_SYSTEM,
+    _CATEGORY_HINTS, _QUESTION_SYSTEM,
     discover_competitors,
 )
+from core.industry_classifier import _BIZ_SYSTEM, _build_classify_prompt
+from core.schemas import _BAD_INDUSTRIES
+
+# 호환성 래퍼 — pipeline.py가 기대하는 시그니처로 변환
+def _build_biz_prompt(domain: str, crawl_result, search_ctx: str) -> str:
+    clean_text = crawl_result.body_text if crawl_result else ""
+    return _build_classify_prompt(domain, clean_text, search_ctx, "")
 
 logger = get_logger("pipeline")
 
