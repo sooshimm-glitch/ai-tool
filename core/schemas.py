@@ -128,11 +128,13 @@ class BusinessInfo:
 
     @classmethod
     def fallback(cls, domain_stem: str, crawl_tier: int = 0) -> "BusinessInfo":
+        # 하이픈·언더스코어 제거하고 자연스러운 형태로 (MY-PROGRESS → My Progress)
+        brand = domain_stem.replace("-", " ").replace("_", " ").title()
         return cls(
-            brand_name=domain_stem.upper(),
-            industry=f"{domain_stem} 관련 서비스",
+            brand_name=brand,
+            industry=f"{brand} 관련 서비스",
             industry_category="기타",
-            core_product=f"{domain_stem} 서비스",
+            core_product=f"{brand} 서비스",
             target_audience="잠재 고객",
             confidence="low",
             crawl_tier=crawl_tier,
