@@ -25,16 +25,11 @@ from .industry_classifier import classify_industry
 from .competitor_finder import discover_competitors
 from .schemas import BusinessInfo, Competitor
 
-# ── 역할 분리된 모듈 re-export (app.py / pipeline.py import 경로 유지) ──
-from .question_generator import generate_target_questions
-from .strategy_analyzer import run_strategy_analysis
-
 logger = get_logger("biz_analysis")
 
 __all__ = [
     "BusinessInfo", "Competitor",
     "analyze_business", "discover_competitors",
-    "generate_target_questions", "run_strategy_analysis",
 ]
 
 
