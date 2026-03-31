@@ -24,11 +24,11 @@ from typing import Optional
 
 import requests
 
-from core.logger import get_logger, CaptureError
-from core.cache import get_cache
-from core.crawler import crawl, crawl_search
-from core.ai_client import call_gpt, call_gemini
-from core.schemas import BusinessInfo, Competitor
+from .logger import get_logger, CaptureError
+from .cache import get_cache
+from .crawler import crawl, crawl_search
+from .ai_client import call_gpt, call_gemini
+from .schemas import BusinessInfo, Competitor
 
 logger = get_logger("competitor_finder")
 
