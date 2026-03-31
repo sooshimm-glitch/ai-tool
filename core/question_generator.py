@@ -1,0 +1,156 @@
+"""
+question_generator.py — 타겟 질문 생성 전담 모듈
+
+수동 분석형(Tab2): 브랜드명 미포함, 카테고리 전체 대상 질문 생성.
+자동 분석형(Tab1)은 pipeline.py의 generate_questions_from_state() 사용.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Optional
+from urllib.parse import urlparse
+
+from .logger import get_logger, CaptureError
+from .cache import get_cache
+from .ai_client import call_gpt, call_gemini
+from .schemas import BusinessInfo
+from .prompts import QUESTION_SYSTEM, QUESTION_GEN_MANUAL_TMPL
+
+logger = get_logger("question_generator")
+
+# biz_analysis.py 기존 import 경로 호환용 re-export
+_QUESTION_SYSTEM = QUESTION_SYSTEM
+
+_CATEGORY_HINTS: dict[str, str] = {
+    "광고/마케팅": (
+        "광고주(중소기업 대표, 마케터)가 대행사를 선택할 때 묻는 질문 — "
+        "ROAS, CPA, 매체비, 대행수수료, 업종 레퍼런스 위주"
+    ),
+    "이커머스": "구매자의 배송·가격·신뢰도, 판매자의 입점·수수료 관련 질문",
+    "SaaS": "도입 전 데모·연동·보안·가격 플랜, 기존 솔루션 전환 비용 관련 질문",
+    "금융": "금리·한도·수수료·안전성, 타 금융사 대비 혜택 관련 질문",
+    "교육": "커리큘럼·강사·합격률·환불정책, 취업 연계 관련 질문",
+    "의료": "진료 과목·비용·예약, 전문성 관련 질문",
+    "게임": "게임성·과금정책·PC/모바일 지원, 경쟁 타이틀 대비 질문",
+}
+
+_QUESTION_VERSION = "v4"
+
+
+def generate_target_questions(
+    client_gpt,
+    client_gemini,
+    url: str,
+    engine: str,
+    model_gpt: str,
+    biz_info: Optional[BusinessInfo] = None,
+    use_cache: bool = True,
+) -> list[str]:
+    """
+    비즈니스 정보 기반 고품질 타겟 질문 5개 생성.
+    브랜드명을 포함하지 않는 카테고리 전체 대상 질문 (수동 분석형 Tab2용).
+    """
+    try:
+        p = urlparse(url if url.startswith("http") else "https://" + url)
+        domain = p.netloc.replace("www.", "")
+    except Exception:
+        domain = url
+
+    if biz_info is None:
+        biz_info = BusinessInfo(
+            brand_name=domain.split(".")[0].upper(),
+            industry="서비스",
+            industry_category="기타",
+            core_product="서비스",
+            target_audience="잠재 고객",
+        )
+
+    cache = get_cache()
+    cache_key = cache.make_key(
+        "questions", _QUESTION_VERSION, url, biz_info.industry, engine, model_gpt
+    )
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached:
+            logger.info(f"Cache HIT: questions({domain})")
+            return cached
+
+    category_hint = _CATEGORY_HINTS.get(
+        biz_info.industry_category,
+        f"{biz_info.industry} 분야에서 {biz_info.target_audience}가 실제로 고민하는 핵심 질문",
+    )
+    services_str = (
+        ", ".join(biz_info.key_services) if biz_info.key_services else biz_info.core_product
+    )
+
+    prompt = QUESTION_GEN_MANUAL_TMPL.format(
+        industry=biz_info.industry,
+        industry_category=biz_info.industry_category,
+        services_str=services_str,
+        target_audience=biz_info.target_audience,
+        category_hint=category_hint,
+    )
+
+    result_str = ""
+    with CaptureError("question_gen", log_level="warning") as ctx:
+        if engine == "GPT" and client_gpt:
+            result_str = call_gpt(
+                client_gpt, prompt, system=QUESTION_SYSTEM,
+                max_tokens=600, model=model_gpt, temperature=0.85,
+            )
+        elif client_gemini:
+            result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.85)
+        elif client_gpt:
+            result_str = call_gpt(
+                client_gpt, prompt, system=QUESTION_SYSTEM,
+                max_tokens=600, model=model_gpt, temperature=0.85,
+            )
+
+    if not result_str and not ctx.ok:
+        raise RuntimeError(f"질문 생성 실패: {ctx.error}")
+
+    questions = _parse_questions(result_str)
+    if len(questions) < 3:
+        questions = _fallback_questions(biz_info)
+
+    result = questions[:5]
+    if use_cache:
+        cache.set(cache_key, result, namespace="biz")
+    return result
+
+
+def _parse_questions(raw: str) -> list[str]:
+    out: list[str] = []
+    for ln in raw.split("\n"):
+        ln = ln.strip()
+        if not ln:
+            continue
+        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
+        clean = re.sub(r'^[-•*]\s*', '', clean)
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)
+        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean).strip()
+        if len(clean) > 10:
+            if not clean.endswith("?"):
+                clean += "?"
+            out.append(clean)
+    return out
+
+
+def _fallback_questions(biz: BusinessInfo) -> list[str]:
+    is_ad = "광고" in biz.industry or "마케팅" in biz.industry
+    if is_ad:
+        return [
+            f"{biz.industry} 대행사 선택할 때 업종별 ROAS 기준으로 비교하는 방법은?",
+            "광고대행사 계약 전 반드시 확인해야 할 조건과 주의사항은?",
+            f"{biz.industry} 집행 매체별 효율 차이와 예산 배분 기준은?",
+            "직접 광고 운영 vs 대행사 위탁 — 비용 구조와 성과 차이 비교는?",
+            f"{biz.industry} 실제 집행 성과 사례와 평균 CPA 수준은 어느 정도인가요?",
+        ]
+    return [
+        f"{biz.industry} 서비스 선택할 때 경쟁사 대비 꼭 확인해야 할 차이점은?",
+        f"{biz.target_audience}가 {biz.industry} 도입 후 실제로 얻은 성과 사례는?",
+        f"{biz.industry} 계약 및 이용 조건, 비용 구조가 업계 평균과 비교해 어떤가요?",
+        f"{biz.industry} 실제 사용자 평가에서 자주 언급되는 불만 사항은?",
+        f"{biz.industry} 서비스를 비교할 때 가장 중요한 선택 기준은 무엇인가요?",
+    ]
