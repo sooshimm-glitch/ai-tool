@@ -61,7 +61,6 @@ if "dark_mode"    not in st.session_state: st.session_state["dark_mode"]    = Fa
 if "cache_data"   not in st.session_state: st.session_state["cache_data"]   = {}
 if "cost_tracker" not in st.session_state: st.session_state["cost_tracker"] = CostTracker()
 if "industry_display" not in st.session_state: st.session_state["industry_display"] = ""
-if "brand_name_display" not in st.session_state: st.session_state["brand_name_display"] = ""
 
 # 캐시 복원
 _cache = get_cache()
@@ -313,14 +312,17 @@ def render_strategy(strategy: dict, target_url: str):
 
     st.markdown("### 📋 GEO 최적화 가이드")
     for i, g in enumerate(strategy.get("geo_guides", [])):
+        import re as _re
+        g_html = _re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', g)
+        g_html = g_html.replace('\n', '<br>')
         st.markdown(f"""
         <div style="background:white;border-radius:14px;padding:18px 20px;margin:10px 0;
         border:1px solid #E2E8F0;box-shadow:0 2px 12px rgba(37,99,235,.06);">
           <div style="display:flex;gap:12px;align-items:flex-start;">
-            <div style="min-width:30px;height:30px;border-radius:8px;
+            <div style="min-width:30px;height:30px;border-radius:8px;flex-shrink:0;
             background:linear-gradient(135deg,#111,#444);color:white;font-weight:800;
             font-size:.85rem;display:flex;align-items:center;justify-content:center;">{i+1}</div>
-            <p style="margin:0;font-size:.88rem;color:#374151;line-height:1.6;">{g}</p>
+            <div style="margin:0;font-size:.88rem;color:#374151;line-height:1.8;word-break:keep-all;white-space:normal;">{g_html}</div>
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -508,17 +510,9 @@ with tab1:
         </p>
     </div>""", unsafe_allow_html=True)
 
-    col_u, col_b, col_i = st.columns([2, 1, 1])
+    col_u, col_i = st.columns([2, 1])
     with col_u:
         url_auto = st.text_input("🌐 사이트 URL", placeholder="예) naver.com", key="url_auto")
-    with col_b:
-        manual_brand = st.text_input(
-            "🏷️ 브랜드명 확인·수정",
-            value=st.session_state["brand_name_display"],
-            placeholder="AI 자동 추출 → 직접 수정 가능",
-            key="brand_name_widget",
-        )
-        st.session_state["brand_name_display"] = manual_brand
     with col_i:
         manual_industry = st.text_input(
             "🏭 업종 확인·수정",
@@ -577,7 +571,6 @@ with tab1:
                     biz = _pre_state.biz_info
                     cr  = _pre_state.crawl_result
                     st.session_state["industry_display"] = biz.industry
-                    st.session_state["brand_name_display"] = biz.brand_name
                     st.session_state["pre_pipeline_state"] = {
                         "url": _pre_url,
                         "biz": biz.to_dict(),
@@ -649,7 +642,6 @@ with tab1:
             domain      = extract_domain(target_url)
             debug_mode  = st.session_state.get("debug_mode", False)
             confirmed_industry = st.session_state["industry_display"].strip()
-            confirmed_brand    = st.session_state["brand_name_display"].strip()
 
             # ── 파이프라인 진행 상태 표시 ──
             pipeline_status = st.container()
@@ -696,7 +688,6 @@ with tab1:
                     url=target_url,
                     model_gpt=gpt_model,
                     confirmed_industry=confirmed_industry,
-                    confirmed_brand=confirmed_brand,
                     q_engine=q_engine,
                     market_scope=market_scope,
                     n_competitors=n_competitors,
