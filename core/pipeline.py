@@ -512,6 +512,7 @@ def run_pipeline(
     url: str,
     model_gpt: str,
     confirmed_industry: str = "",
+    confirmed_brand: str = "",
     q_engine: str = "GPT",
     market_scope: str = "국내 (대한민국)",
     n_competitors: int = 5,
@@ -653,6 +654,12 @@ def run_pipeline(
             cache.set(biz_cache_key, state.biz_info.to_dict(), namespace="biz")
 
     state.record_time("biz", time.time() - t0)
+
+    # 사용자가 직접 입력한 브랜드명이 있으면 AI 추출값 덮어쓰기
+    if confirmed_brand.strip() and state.biz_info:
+        state.biz_info.brand_name = confirmed_brand.strip()
+        state.log("brand_override", {"brand_name": confirmed_brand.strip()})
+
     _cb("biz", f"완료: {state.biz_info.brand_name} | {state.biz_info.industry} | {state.biz_info.confidence}")
 
     # 경쟁사 병렬 실행 (biz 완료 후, question gen과 동시에)
