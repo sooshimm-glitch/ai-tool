@@ -102,12 +102,153 @@ st.markdown(f"""
   --bg:{_bg}; --bg2:{_bg2}; --card:{_card}; --border:{_border};
   --text:{_text}; --text-muted:{_text_muted}; --primary:{_primary}; --shadow:{_shadow};
 }}
-html,body,[class*="css"] {{
-  font-family:'Plus Jakarta Sans',sans-serif;
-  background-color:var(--bg) !important;
-  color:var(--text) !important;
+
+/* ── 전체 기반 ── */
+html, body {{ background-color:{_bg} !important; color:{_text} !important; }}
+.stApp, .stApp > * {{ background:{_bg} !important; }}
+.main .block-container {{ background:{_bg} !important; }}
+
+/* ── 폰트 & 기본 글자색 — Streamlit 내부 전체 덮어쓰기 ── */
+*, *::before, *::after {{ font-family:'Plus Jakarta Sans',sans-serif !important; }}
+
+/* Streamlit이 쓰는 모든 텍스트 노드 색상 강제 적용 */
+.stApp p, .stApp span, .stApp div,
+.stApp label, .stApp small, .stApp strong,
+.stMarkdown, .stMarkdown p, .stMarkdown li,
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+.stMarkdown h4, .stMarkdown h5, .stMarkdown h6,
+[data-testid="stText"], [data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {{
+  color:{_text} !important;
 }}
-.stApp {{ background:var(--bg) !important; }}
+
+/* ── 메트릭 컴포넌트 ── */
+div[data-testid="metric-container"] {{
+  background:{_metric_bg} !important; border-radius:14px !important;
+  padding:18px !important; border:1px solid {_border} !important;
+  box-shadow:{_shadow} !important;
+}}
+div[data-testid="metric-container"] label,
+div[data-testid="metric-container"] [data-testid="stMetricLabel"],
+div[data-testid="metric-container"] [data-testid="stMetricLabel"] p,
+div[data-testid="metric-container"] [data-testid="stMetricLabel"] span {{
+  color:{_text_muted} !important; font-size:.8rem !important; font-weight:600 !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricValue"],
+div[data-testid="metric-container"] [data-testid="stMetricValue"] * {{
+  color:{_text} !important; font-size:1.6rem !important; font-weight:800 !important;
+}}
+/* 델타(↑↓) — 라이트 모드에서 배경색 제거하고 글자만 */
+div[data-testid="metric-container"] [data-testid="stMetricDelta"],
+div[data-testid="metric-container"] [data-testid="stMetricDelta"] * {{
+  color:{_text_muted} !important; font-size:.78rem !important;
+  background:transparent !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricDelta"] svg {{
+  display:none !important;
+}}
+
+/* ── 입력창 레이블 ── */
+.stTextInput label, .stTextArea label,
+.stSelectbox label, .stSlider label,
+.stRadio label, .stCheckbox label,
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p {{
+  color:{_text} !important; font-weight:600 !important;
+}}
+
+/* 입력 필드 자체 */
+.stTextInput>div>div>input,
+.stTextArea>div>div>textarea {{
+  border-radius:12px !important; border:1.5px solid {_border} !important;
+  background:{_input_bg} !important; color:{_text} !important;
+  font-size:.9rem !important;
+}}
+.stTextInput>div>div>input::placeholder,
+.stTextArea>div>div>textarea::placeholder {{
+  color:{_text_muted} !important;
+}}
+
+/* ── 셀렉트박스 ── */
+.stSelectbox>div>div,
+.stSelectbox [data-baseweb="select"] > div {{
+  background:{_input_bg} !important; border:1.5px solid {_border} !important;
+  border-radius:12px !important; color:{_text} !important;
+}}
+.stSelectbox [data-baseweb="select"] span {{
+  color:{_text} !important;
+}}
+/* 드롭다운 메뉴 */
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="popover"] li {{
+  background:{_card} !important; color:{_text} !important;
+}}
+
+/* ── 슬라이더 ── */
+.stSlider [data-testid="stTickBar"] span,
+.stSlider p {{ color:{_text} !important; }}
+
+/* ── 라디오 버튼 ── */
+.stRadio > div > label > div > p {{ color:{_text} !important; }}
+
+/* ── 탭 ── */
+.stTabs [data-baseweb="tab-list"] {{
+  background:{_tab_bg} !important; border-radius:14px !important;
+  padding:6px !important; border:1px solid {_border} !important;
+}}
+.stTabs [data-baseweb="tab"] {{
+  border-radius:10px !important; font-weight:600 !important;
+  font-size:.9rem !important; color:{_text_muted} !important; padding:10px 22px !important;
+  background:transparent !important;
+}}
+.stTabs [aria-selected="true"] {{
+  background:{_tab_sel} !important;
+  color:{"white" if not _dark else "#F0F0F0"} !important;
+  box-shadow:0 4px 12px rgba(0,0,0,.3) !important;
+}}
+.stTabs [data-baseweb="tab"] p {{ color:inherit !important; }}
+
+/* ── 버튼 ── */
+.stButton>button {{
+  background:{_btn_gr} !important; color:white !important;
+  border:none !important; border-radius:12px !important; font-weight:700 !important;
+  padding:12px 28px !important; transition:all .2s !important;
+}}
+.stButton>button:hover {{ transform:translateY(-2px) !important; opacity:.92 !important; }}
+.stButton>button p {{ color:white !important; }}
+
+/* ── 프로그레스 바 ── */
+.stProgress>div>div>div {{ background:{_progress} !important; border-radius:8px !important; }}
+
+/* ── 사이드바 — 다크 고정 ── */
+[data-testid="stSidebar"] {{ background:{_sidebar_gr} !important; }}
+[data-testid="stSidebar"] *:not(.stButton>button) {{ color:white !important; }}
+[data-testid="stSidebar"] .stTextInput>div>div>input {{
+  background:rgba(255,255,255,.12) !important;
+  border:1px solid rgba(255,255,255,.25) !important; color:white !important;
+}}
+[data-testid="stSidebar"] .stSelectbox>div>div {{
+  background:rgba(255,255,255,.1) !important;
+  border:1px solid rgba(255,255,255,.2) !important; color:white !important;
+}}
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span {{ color:white !important; }}
+[data-testid="stSidebar"] .stSlider [role="slider"] {{ background:white !important; }}
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span {{ color:white !important; }}
+
+/* ── expander ── */
+.streamlit-expander {{
+  background:{_card} !important; border:1px solid {_border} !important; border-radius:12px !important;
+}}
+.streamlit-expander summary {{ color:{_text} !important; }}
+.streamlit-expander summary p {{ color:{_text} !important; }}
+
+/* ── 데이터프레임 ── */
+[data-testid="stDataFrame"] {{ background:{_card} !important; }}
+[data-testid="stDataFrame"] * {{ color:{_text} !important; background:{_card} !important; }}
+
+/* ── 헤더 카드 ── */
 .main-header {{
   background:{_header_gr}; border-radius:20px; padding:36px 40px;
   margin-bottom:28px; box-shadow:{_shadow};
@@ -115,95 +256,57 @@ html,body,[class*="css"] {{
 .main-header h1 {{ color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; }}
 .main-header p  {{ color:rgba(255,255,255,.82) !important; font-size:1rem !important; margin:8px 0 0 !important; }}
 .metric-card,.result-card {{
-  background:var(--card) !important; border-radius:16px; padding:22px 24px;
-  border:1px solid var(--border); box-shadow:var(--shadow); color:var(--text);
+  background:{_card} !important; border-radius:16px; padding:22px 24px;
+  border:1px solid {_border}; box-shadow:{_shadow};
 }}
-.result-card h4 {{ color:var(--text) !important; }}
-.stTabs [data-baseweb="tab-list"] {{
-  background:{_tab_bg} !important; border-radius:14px !important;
-  padding:6px !important; border:1px solid var(--border) !important;
-}}
-.stTabs [data-baseweb="tab"] {{
-  border-radius:10px !important; font-weight:600 !important;
-  font-size:.9rem !important; color:var(--text-muted) !important; padding:10px 22px !important;
-}}
-.stTabs [aria-selected="true"] {{
-  background:{_tab_sel} !important;
-  color:{"white" if not _dark else "#F0F0F0"} !important;
-  box-shadow:0 4px 12px rgba(0,0,0,.3) !important;
-}}
-.stTextInput>div>div>input,
-.stTextArea>div>div>textarea {{
-  border-radius:12px !important; border:1.5px solid var(--border) !important;
-  font-family:'Plus Jakarta Sans',sans-serif !important;
-  background:{_input_bg} !important; color:var(--text) !important;
-}}
-.stButton>button {{
-  background:{_btn_gr} !important; color:white !important;
-  border:none !important; border-radius:12px !important; font-weight:700 !important;
-  padding:12px 28px !important; transition:all .2s !important;
-  font-family:'Plus Jakarta Sans',sans-serif !important;
-}}
-.stButton>button:hover {{ transform:translateY(-2px) !important; }}
-[data-testid="stSidebar"] {{ background:{_sidebar_gr} !important; }}
-[data-testid="stSidebar"] * {{ color:white !important; }}
-[data-testid="stSidebar"] .stTextInput>div>div>input {{
-  background:rgba(255,255,255,.12) !important;
-  border:1px solid rgba(255,255,255,.25) !important; color:white !important;
-}}
-div[data-testid="metric-container"] {{
-  background:{_metric_bg} !important; border-radius:14px !important;
-  padding:18px !important; border:1px solid var(--border) !important;
-}}
-div[data-testid="metric-container"] * {{ color:var(--text) !important; }}
-.stProgress>div>div>div {{ background:{_progress} !important; border-radius:8px !important; }}
+.result-card h4 {{ color:{_text} !important; }}
+.result-card p {{ color:{_text} !important; }}
+
+/* ── 사이드바 로고 ── */
 .sidebar-logo {{ text-align:center; padding:20px 0 24px; border-bottom:1px solid rgba(255,255,255,.15); margin-bottom:20px; }}
 .sidebar-logo .logo-icon {{ font-size:2.5rem; display:block; margin-bottom:8px; }}
 .sidebar-logo h2 {{ color:white !important; font-size:1.1rem !important; font-weight:800 !important; margin:0 !important; }}
 .sidebar-logo p  {{ color:rgba(255,255,255,.6) !important; font-size:.75rem !important; margin:4px 0 0 !important; }}
-.share-badge-high {{ display:inline-block; background:linear-gradient(135deg,#10B981,#059669); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.share-badge-mid  {{ display:inline-block; background:linear-gradient(135deg,#F59E0B,#D97706); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.share-badge-low  {{ display:inline-block; background:linear-gradient(135deg,#EF4444,#DC2626); color:white; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-/* 라이트 모드에서도 배지 글자가 보이도록 색상 고정 */
-.cost-badge {{ background:rgba(16,185,129,.15); border:1px solid #10B981; color:#059669 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
+
+/* ── 배지 ── */
+.share-badge-high {{ display:inline-block; background:linear-gradient(135deg,#10B981,#059669); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
+.share-badge-mid  {{ display:inline-block; background:linear-gradient(135deg,#F59E0B,#D97706); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
+.share-badge-low  {{ display:inline-block; background:linear-gradient(135deg,#EF4444,#DC2626); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
+.cost-badge  {{ background:rgba(16,185,129,.15); border:1px solid #10B981; color:#059669 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
 .cache-badge {{ background:rgba(99,102,241,.15); border:1px solid #6366F1; color:#4F46E5 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
-/* 인라인 카드 — 라이트/다크 공용 */
+
+/* ── 인라인 카드 / 전략카드 / GEO ── */
 .inline-card {{
-  background:var(--card); border:1px solid var(--border);
+  background:{_card}; border:1px solid {_border};
   border-radius:10px; padding:11px 16px; margin:5px 0;
-  display:flex; align-items:center; gap:12px; color:var(--text);
+  display:flex; align-items:center; gap:12px;
 }}
-.inline-card .q-text {{ font-size:.9rem; color:var(--text); font-weight:500; flex:1; }}
-/* 전략 분석 카드 */
+.inline-card .q-text {{ font-size:.9rem; color:{_text} !important; font-weight:500; flex:1; }}
 .strategy-item {{
-  background:var(--card); border-radius:12px; padding:14px 16px;
-  margin:8px 0; border:1px solid var(--border);
+  background:{_card}; border-radius:12px; padding:14px 16px;
+  margin:8px 0; border:1px solid {_border};
 }}
-.strategy-item span {{ font-size:.85rem; color:var(--text); }}
+.strategy-item span {{ font-size:.85rem; color:{_text} !important; }}
 .blue-ocean-item {{
-  background:var(--bg2); border-radius:12px; padding:12px 16px;
-  margin:8px 0; border:1px solid var(--border);
+  background:{_bg2}; border-radius:12px; padding:12px 16px;
+  margin:8px 0; border:1px solid {_border};
   display:flex; align-items:center; gap:10px;
 }}
 .blue-ocean-item .label {{
-  background:linear-gradient(135deg,#111,#444); color:white;
+  background:linear-gradient(135deg,#111,#444); color:white !important;
   padding:3px 10px; border-radius:20px; font-size:.75rem; font-weight:700;
 }}
-.blue-ocean-item .kw {{ font-size:.88rem; color:var(--text); font-weight:600; }}
+.blue-ocean-item .kw {{ font-size:.88rem; color:{_text} !important; font-weight:600; }}
 .geo-guide-item {{
-  background:var(--card); border-radius:14px; padding:18px 20px;
-  margin:10px 0; border:1px solid var(--border);
-  box-shadow:0 2px 12px rgba(0,0,0,.06);
+  background:{_card}; border-radius:14px; padding:18px 20px;
+  margin:10px 0; border:1px solid {_border}; box-shadow:0 2px 12px rgba(0,0,0,.06);
 }}
-.geo-guide-item .geo-text {{ margin:0; font-size:.88rem; color:var(--text); line-height:1.8; word-break:keep-all; white-space:normal; }}
-/* 히스토리 탭 안내 텍스트 */
-.hist-empty {{ text-align:center; padding:48px; color:var(--text-muted); }}
-/* 푸터 */
-.app-footer {{ text-align:center; padding:20px; color:var(--text-muted); font-size:.8rem; border-top:1px solid var(--border); }}
-{"" if not _dark else """
-.stMarkdown,.stMarkdown p,.stMarkdown li {{ color:#E0E0E0 !important; }}
-.stSelectbox>div>div {{ background:#252525 !important; color:#E0E0E0 !important; }}
-"""}
+.geo-guide-item .geo-text {{ margin:0; font-size:.88rem; color:{_text} !important; line-height:1.8; word-break:keep-all; }}
+.hist-empty {{ text-align:center; padding:48px; color:{_text_muted}; }}
+.app-footer {{ text-align:center; padding:20px; color:{_text_muted}; font-size:.8rem; border-top:1px solid {_border}; }}
+
+/* ── 토글 ── */
+.stToggle label p {{ color:{_text} !important; }}
 </style>
 """, unsafe_allow_html=True)
 
