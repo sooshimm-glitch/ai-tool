@@ -15,11 +15,11 @@ import re
 import json
 from typing import Any
 
-from core.logger import get_logger, CaptureError
-from core.cache import get_cache
-from core.crawler import crawl_search
-from core.ai_client import call_gpt, call_gemini
-from core.schemas import (
+from .logger import get_logger, CaptureError
+from .cache import get_cache
+from .crawler import crawl_search
+from .ai_client import call_gpt, call_gemini
+from .schemas import (
     BusinessInfo, INDUSTRY_CATEGORIES, CATEGORY_TO_DETAIL, _BAD_INDUSTRIES
 )
 
