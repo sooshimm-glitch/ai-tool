@@ -1,7 +1,7 @@
-streamlit
-google-generativeai
-openai
-plotly
-pandas
-python-dotenv
-python-docx
+streamlit>=1.35.0
+openai>=1.30.0
+google-generativeai>=0.7.0
+plotly>=5.22.0
+pandas>=2.2.0
+requests>=2.32.0
+beautifulsoup4>=4.12.0
