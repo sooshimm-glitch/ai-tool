@@ -119,7 +119,7 @@ _CATEGORY_HINTS = {
     "게임": "게임성·과금정책·PC/모바일 지원, 경쟁 타이틀 대비 질문",
 }
 
-_QUESTION_VERSION = "v3"
+_QUESTION_VERSION = "v4"
 
 
 def generate_target_questions(
@@ -167,29 +167,31 @@ def generate_target_questions(
 
     prompt = f"""당신은 {biz_info.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
 
-[분석 대상]
-- 브랜드명: {biz_info.brand_name}  ← 질문에 반드시 이 이름을 자연스럽게 포함
+[분석 대상 서비스 정보 — 내부 참고용, 질문에 직접 노출 금지]
 - 업종: {biz_info.industry} ({biz_info.industry_category})
 - 핵심 서비스: {services_str}
 - 주요 타겟: {biz_info.target_audience}
-- 도메인(참고용, 질문에 사용 금지): {domain}
 
 [질문 방향]
 {category_hint}
 
-[생성 규칙]
-1. {biz_info.target_audience}가 "{biz_info.brand_name}"을 도입/계약/구매 결정할 때 AI에 입력하는 현실적 질문
-2. 구매 결정 5단계(인지→비교→신뢰→가격→전환)를 각각 다룰 것
-3. {biz_info.industry} 업계 전문 용어·지표·관행 적극 활용
-4. "~는 무엇인가요?", "~를 소개해주세요" 같은 기초 탐색형 질문 금지
-5. 구체적 수치·비교·상황이 포함된 깊이 있는 질문
+[핵심 규칙 — 반드시 준수]
+1. 실제 사용자가 네이버, 구글, ChatGPT 검색창에 입력하는 방식의 자연스러운 질문
+2. 브랜드명, 회사명, 도메인 주소를 질문에 절대 포함하지 말 것
+3. "{biz_info.industry}" 카테고리 전체를 대상으로 하는 질문 (특정 브랜드 X)
+4. 구매 결정 5단계(인지, 비교, 신뢰, 가격, 전환) 각각 다룰 것
+5. {biz_info.industry} 업계 전문 용어와 지표 적극 활용
+6. 기초 탐색형 질문 금지 ("무엇인가요?", "소개해주세요" 등)
 
-[예시]
-✅ "{biz_info.brand_name}의 퍼포먼스 마케팅 집행 시 타 대행사 대비 평균 ROAS 달성 수치는?"
-✅ "{biz_info.brand_name}를 도입한 기업이 6개월 내 달성한 전환율 개선치와 ROI는?"
-❌ "{biz_info.brand_name}는 무엇을 하는 회사인가요?"
+[좋은 예시]
+- "{biz_info.industry} 업체 선택할 때 꼭 확인해야 할 계약 조건은?"
+- "{biz_info.target_audience}가 실제로 효과 본 {biz_info.industry} 서비스 어떻게 찾나요?"
+- "{biz_info.industry} 비용 대비 성과 잘 내는 곳 비교하는 방법은?"
 
-번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결. 도메인 주소 금지."""
+[나쁜 예시 — 절대 금지]
+- 브랜드명이나 회사명이 들어간 질문 일체
+
+번호 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
 
     result_str = ""
     with CaptureError("question_gen", log_level="warning") as ctx:
@@ -236,25 +238,25 @@ def _fallback_questions(biz: BusinessInfo) -> list[str]:
     is_ad = "광고" in biz.industry or "마케팅" in biz.industry
     if is_ad:
         return [
-            f"{biz.brand_name}의 업종별 광고 ROAS가 타 대행사 대비 어느 수준인가요?",
-            f"{biz.target_audience}가 {biz.brand_name}에 광고를 맡기기 전 확인할 계약 조건은?",
-            f"{biz.brand_name}의 주요 집행 매체와 공식 파트너십 현황은?",
-            f"{biz.brand_name} 광고 집행 시 직접 운영 대비 대행수수료 구조는?",
-            f"{biz.brand_name}의 실제 광고주 성과 사례와 평균 CPA 수준은?",
+            f"{biz.industry} 대행사 선택할 때 업종별 ROAS 기준으로 비교하는 방법은?",
+            f"광고대행사 계약 전 반드시 확인해야 할 조건과 주의사항은?",
+            f"{biz.industry} 집행 매체별 효율 차이와 예산 배분 기준은?",
+            f"직접 광고 운영 vs 대행사 위탁 — 비용 구조와 성과 차이 비교",
+            f"{biz.industry} 실제 집행 성과 사례와 평균 CPA 수준은 어느 정도인가요?",
         ]
     return [
-        f"{biz.brand_name}이 {biz.industry} 시장에서 경쟁사 대비 실제로 다른 점은?",
-        f"{biz.target_audience}가 {biz.brand_name} 선택 후 실제 얻은 성과는?",
-        f"{biz.brand_name}의 계약·이용 조건과 비용 구조가 동종 업계 대비 어떤 수준인가요?",
-        f"{biz.brand_name}에 대한 실제 사용자 평가와 주요 불만 사항은?",
-        f"{biz.industry}에서 {biz.brand_name}과 직접 비교되는 대안 서비스는?",
+        f"{biz.industry} 서비스 선택할 때 경쟁사 대비 꼭 확인해야 할 차이점은?",
+        f"{biz.target_audience}가 {biz.industry} 도입 후 실제로 얻은 성과 사례는?",
+        f"{biz.industry} 계약 및 이용 조건, 비용 구조가 업계 평균과 비교해 어떤가요?",
+        f"{biz.industry} 실제 사용자 평가에서 자주 언급되는 불만 사항은?",
+        f"{biz.industry} 서비스를 비교할 때 가장 중요한 선택 기준은 무엇인가요?",
     ]
 
 
 # ─────────────────────────────────────────────
 # 전략 분석
 # ─────────────────────────────────────────────
-_STRATEGY_VERSION = "v3"
+_STRATEGY_VERSION = "v4"
 
 
 def run_strategy_analysis(
@@ -305,8 +307,9 @@ def run_strategy_analysis(
 - 분석 대상: {biz.brand_name} (업종: {biz.industry})
 - {scope_inst}
 - {domain}도 적절한 순위에 포함
-JSON 배열만:
-[{{"rank":1,"domain":"x.com","brand_name":"브랜드","reason":"이유","position":"업계1위|신흥강자|틈새전문 중 택1"}}]"""
+- 반드시 실제 존재하는 브랜드와 도메인만 사용. c1.com, competitor.com 같은 가상 도메인 절대 금지.
+JSON 배열만 출력 (다른 텍스트 없이):
+[{{"rank":1,"domain":"실제도메인.com","brand_name":"실제브랜드명","reason":"이유 20자 이내","position":"업계1위|신흥강자|틈새전문 중 택1"}}]"""
         raw = ""
         with CaptureError("strategy_comp", log_level="warning"):
             raw = (call_gpt(client_gpt, prompt, system=_system, max_tokens=1200,
@@ -316,15 +319,21 @@ JSON 배열만:
         with CaptureError("strategy_comp_parse", log_level="warning"):
             m = re.search(r'\[.*\]', raw, re.DOTALL)
             if m:
-                return json.loads(m.group())
-        return [{"rank": i+1, "domain": f"c{i+1}.com", "brand_name": f"경쟁사{i+1}",
-                 "reason": "관련 사이트", "position": "시장 참여자"} for i in range(5)]
+                parsed = json.loads(m.group())
+                real = [
+                    c for c in parsed
+                    if c.get("domain") and
+                    not re.match(r'^(c\d+|competitor\d*|example|test|dummy)\.', str(c.get("domain", "")))
+                ]
+                if real:
+                    return real
+        return []
 
     def _diagnosis() -> list[str]:
         prompt = (
             f'{domain} ({biz.brand_name}, {biz.industry})이 "{question}"에서 '
             f'AI 인용 점유율이 낮은 원인 3가지.\n'
-            f'경쟁사 대비 구체적 문제점. 각 항목 50자 이내. 번호 없이 한 줄씩:'
+            f'경쟁사 대비 구체적 문제점. 각 항목 50자 이내. 반드시 한국어로. 번호 없이 한 줄씩:'
         )
         with CaptureError("strategy_diag", log_level="warning"):
             r = (call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
@@ -336,15 +345,16 @@ JSON 배열만:
 
     def _keywords() -> list[str]:
         prompt = (
-            f'{biz.brand_name} ({biz.industry}) 사이트에서 AI 인용 확률 높은 블루오션 키워드 5개.\n'
-            f'경쟁 적고 전문성 높은 틈새 키워드. {scope_inst} 키워드만, 한 줄에 하나:'
+            f'{biz.industry} 분야에서 AI 인용 확률 높은 블루오션 키워드 5개를 한국어로 추천해주세요.\n'
+            f'조건: 경쟁이 적고 전문성 높은 틈새 키워드. {scope_inst}\n'
+            f'반드시 한국어 키워드만. 영어 금지. 키워드만 한 줄에 하나씩 출력:'
         )
         with CaptureError("strategy_kw", log_level="warning"):
             r = (call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.7)
                  if client_gemini else
                  call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
                           model=model_gpt, temperature=0.7))
-            return [k.strip().lstrip("•-*1234567890. ") for k in r.split("\n") if k.strip()][:5]
+            return [k.strip().lstrip("•-*1234567890. ") for k in r.split("\n") if k.strip() and len(k.strip()) > 2][:5]
         return ["분석 중 오류"]
 
     def _geo() -> list[str]:
