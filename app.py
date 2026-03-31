@@ -61,6 +61,7 @@ if "dark_mode"    not in st.session_state: st.session_state["dark_mode"]    = Fa
 if "cache_data"   not in st.session_state: st.session_state["cache_data"]   = {}
 if "cost_tracker" not in st.session_state: st.session_state["cost_tracker"] = CostTracker()
 if "industry_display" not in st.session_state: st.session_state["industry_display"] = ""
+if "brand_name_display" not in st.session_state: st.session_state["brand_name_display"] = ""
 
 # 캐시 복원
 _cache = get_cache()
@@ -507,9 +508,17 @@ with tab1:
         </p>
     </div>""", unsafe_allow_html=True)
 
-    col_u, col_i = st.columns([2, 1])
+    col_u, col_b, col_i = st.columns([2, 1, 1])
     with col_u:
         url_auto = st.text_input("🌐 사이트 URL", placeholder="예) naver.com", key="url_auto")
+    with col_b:
+        manual_brand = st.text_input(
+            "🏷️ 브랜드명 확인·수정",
+            value=st.session_state["brand_name_display"],
+            placeholder="AI 자동 추출 → 직접 수정 가능",
+            key="brand_name_widget",
+        )
+        st.session_state["brand_name_display"] = manual_brand
     with col_i:
         manual_industry = st.text_input(
             "🏭 업종 확인·수정",
@@ -568,6 +577,7 @@ with tab1:
                     biz = _pre_state.biz_info
                     cr  = _pre_state.crawl_result
                     st.session_state["industry_display"] = biz.industry
+                    st.session_state["brand_name_display"] = biz.brand_name
                     st.session_state["pre_pipeline_state"] = {
                         "url": _pre_url,
                         "biz": biz.to_dict(),
@@ -639,6 +649,7 @@ with tab1:
             domain      = extract_domain(target_url)
             debug_mode  = st.session_state.get("debug_mode", False)
             confirmed_industry = st.session_state["industry_display"].strip()
+            confirmed_brand    = st.session_state["brand_name_display"].strip()
 
             # ── 파이프라인 진행 상태 표시 ──
             pipeline_status = st.container()
@@ -685,6 +696,7 @@ with tab1:
                     url=target_url,
                     model_gpt=gpt_model,
                     confirmed_industry=confirmed_industry,
+                    confirmed_brand=confirmed_brand,
                     q_engine=q_engine,
                     market_scope=market_scope,
                     n_competitors=n_competitors,
