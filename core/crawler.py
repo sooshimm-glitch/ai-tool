@@ -16,8 +16,8 @@ from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from typing import Optional
 
-from core.logger import get_logger, CaptureError
-from core.cache import get_cache
+from .logger import get_logger, CaptureError
+from .cache import get_cache
 
 logger = get_logger("crawler")
 
