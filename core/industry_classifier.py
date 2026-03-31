@@ -34,7 +34,7 @@ _CATEGORY_LABELS = " | ".join(INDUSTRY_CATEGORIES)
 
 # ── 캐시 키 버전 상수 ─────────────────────────────────────────────
 # 프롬프트 구조가 바뀔 때 이 값을 올려 stale 캐시를 자동 무효화
-_CLASSIFIER_VERSION = "v3"
+_CLASSIFIER_VERSION = "v4"
 
 
 def _make_cache_key(url: str, model_gpt: str, confirmed_industry: str) -> str:
@@ -76,13 +76,13 @@ def _build_classify_prompt(
 - industry: 구체적 세부 업종 (예시보다 더 구체적 표현 가능)
   ✅ "퍼포먼스 마케팅 광고대행사", "B2B SaaS HR솔루션"
   ❌ "IT 서비스", "온라인 서비스", "디지털 서비스"
-- brand_name: 도메인이 아닌 실제 브랜드명
+- brand_name: 도메인이 아닌 실제 브랜드명 (한국 서비스면 한국어로, 예: "마이프로그레스", "네이버", "카카오"). 본문·타이틀·로고 텍스트에서 우선 추출. 찾을 수 없으면 도메인 줄기를 한국어 발음으로 변환
 - confidence: 크롤+데이터 풍부=high, 보통=medium, 부족=low
 - 광고·퍼포먼스·IMC·GFA·매체 키워드 → 광고대행사 계열 우선
 
 JSON만 출력 (다른 텍스트 없이):
 {{
-  "brand_name": "실제 브랜드명",
+  "brand_name": "한국어 실제 브랜드명 (예: 마이프로그레스, 네이버, 쿠팡)",
   "industry_category": "선택지 중 택1",
   "industry": "구체적 세부 업종",
   "core_product": "핵심 서비스/상품 한 문장",
