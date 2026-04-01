@@ -95,20 +95,21 @@ def run_strategy_analysis(
                 if client_gpt else
                 call_gemini(client_gemini, prompt, max_tokens=1200, temperature=0.3)
             )
-        with CaptureError("strategy_comp_parse", log_level="warning"):
-            m = re.search(r'\[.*\]', raw, re.DOTALL)
-            if m:
-                parsed = json.loads(m.group())
-                real = [
-                    c for c in parsed
-                    if c.get("domain") and
-                    not re.match(
-                        r'^(c\d+|competitor\d*|example|test|dummy)\.',
-                        str(c.get("domain", ""))
-                    )
-                ]
-                if real:
-                    return real
+        if raw:
+            with CaptureError("strategy_comp_parse", log_level="warning"):
+                m = re.search(r'\[.*\]', raw, re.DOTALL)
+                if m:
+                    parsed = json.loads(m.group())
+                    real = [
+                        c for c in parsed
+                        if c.get("domain") and
+                        not re.match(
+                            r'^(c\d+|competitor\d*|example|test|dummy)\.',
+                            str(c.get("domain", ""))
+                        )
+                    ]
+                    if real:
+                        return real
         return []
 
     def _diagnosis() -> list[str]:
@@ -118,14 +119,16 @@ def run_strategy_analysis(
             industry=biz.industry,
             question=question,
         )
-        with CaptureError("strategy_diag", log_level="warning"):
+        with CaptureError("strategy_diag", log_level="warning") as ctx:
             r = (
                 call_gpt(client_gpt, prompt, system=STRATEGY_SYSTEM,
                          max_tokens=600, model=model_gpt, temperature=0.4)
                 if client_gpt else
                 call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.4)
             )
-            return [d.strip().lstrip("•-*") for d in r.split("\n") if d.strip()][:3]
+            items = [d.strip().lstrip("•-*") for d in r.split("\n") if d.strip()][:3]
+            if items:
+                return items
         return ["데이터 부족으로 분석 불가"]
 
     def _keywords() -> list[str]:
@@ -133,18 +136,20 @@ def run_strategy_analysis(
             industry=biz.industry,
             scope_inst=scope_inst,
         )
-        with CaptureError("strategy_kw", log_level="warning"):
+        with CaptureError("strategy_kw", log_level="warning") as ctx:
             r = (
                 call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.7)
                 if client_gemini else
                 call_gpt(client_gpt, prompt, system=STRATEGY_SYSTEM,
                          max_tokens=600, model=model_gpt, temperature=0.7)
             )
-            return [
+            items = [
                 k.strip().lstrip("•-*1234567890. ")
                 for k in r.split("\n")
                 if k.strip() and len(k.strip()) > 2
             ][:5]
+            if items:
+                return items
         return ["분석 중 오류"]
 
     def _geo() -> list[str]:
@@ -153,14 +158,16 @@ def run_strategy_analysis(
             brand_name=biz.brand_name,
             question=question,
         )
-        with CaptureError("strategy_geo", log_level="warning"):
+        with CaptureError("strategy_geo", log_level="warning") as ctx:
             r = (
                 call_gpt(client_gpt, prompt, system=STRATEGY_SYSTEM,
                          max_tokens=1000, model=model_gpt, temperature=0.5)
                 if client_gpt else
                 call_gemini(client_gemini, prompt, max_tokens=1000, temperature=0.5)
             )
-            return [g.strip() for g in re.split(r'\n(?=\d+\.)', r) if g.strip()][:3]
+            items = [g.strip() for g in re.split(r'\n(?=\d+\.)', r) if g.strip()][:3]
+            if items:
+                return items
         return ["분석 중 오류"]
 
     # ── 4개 병렬 실행 ──────────────────────────
@@ -170,10 +177,17 @@ def run_strategy_analysis(
         f_kw   = ex.submit(_keywords)
         f_geo  = ex.submit(_geo)
 
-        competitors = f_comp.result(timeout=60) or []
-        diagnoses   = f_diag.result(timeout=60) or ["데이터 부족으로 분석 불가"]
-        keywords    = f_kw.result(timeout=60)   or ["분석 중 오류"]
-        geo_guides  = f_geo.result(timeout=60)  or ["분석 중 오류"]
+    # with 블록 종료 후 결과 수집 — timeout 예외가 다른 Future에 영향 안 줌
+    def _safe_result(future, fallback, timeout=60):
+        try:
+            return future.result(timeout=timeout) or fallback
+        except Exception:
+            return fallback
+
+    competitors = _safe_result(f_comp, [])
+    diagnoses   = _safe_result(f_diag, ["데이터 부족으로 분석 불가"])
+    keywords    = _safe_result(f_kw,   ["분석 중 오류"])
+    geo_guides  = _safe_result(f_geo,  ["분석 중 오류"])
 
     result = {
         "competitors": competitors,
