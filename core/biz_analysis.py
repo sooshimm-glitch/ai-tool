@@ -70,8 +70,8 @@ def analyze_business(
     # Step 2: 텍스트 정제
     clean_text = extract_business_text(crawl_result.body_text)
     logger.info(
-        f"extract_business_text: {len(crawl_result.body_text)}"
-        f"→{len(clean_text)} chars (tier={crawl_result.tier_used})"
+        f"extract_business_text: {len(crawl_result.body_text)} "
+        f"→ {len(clean_text)} chars (tier={crawl_result.tier_used})"
     )
 
     # Step 3: 검색 보완 (크롤 품질과 무관하게 항상 수집)
@@ -204,7 +204,7 @@ def generate_target_questions(
             result_str = call_gpt(client_gpt, prompt, system=_QUESTION_SYSTEM,
                                   max_tokens=600, model=model_gpt, temperature=0.85)
 
-    if not result_str and not ctx.ok:
+    if not ctx.ok:
         raise RuntimeError(f"질문 생성 실패: {ctx.error}")
 
     questions = _parse_questions(result_str)
@@ -335,12 +335,14 @@ JSON 배열만 출력 (다른 텍스트 없이):
             f'AI 인용 점유율이 낮은 원인 3가지.\n'
             f'경쟁사 대비 구체적 문제점. 각 항목 50자 이내. 반드시 한국어로. 번호 없이 한 줄씩:'
         )
-        with CaptureError("strategy_diag", log_level="warning"):
+        with CaptureError("strategy_diag", log_level="warning") as ctx:
             r = (call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
                           model=model_gpt, temperature=0.4)
                  if client_gpt else
                  call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.4))
-            return [d.strip().lstrip("•-*") for d in r.split("\n") if d.strip()][:3]
+            items = [d.strip().lstrip("•-*") for d in r.split("\n") if d.strip()][:3]
+            if items:
+                return items
         return ["데이터 부족으로 분석 불가"]
 
     def _keywords() -> list[str]:
@@ -349,12 +351,14 @@ JSON 배열만 출력 (다른 텍스트 없이):
             f'조건: 경쟁이 적고 전문성 높은 틈새 키워드. {scope_inst}\n'
             f'반드시 한국어 키워드만. 영어 금지. 키워드만 한 줄에 하나씩 출력:'
         )
-        with CaptureError("strategy_kw", log_level="warning"):
+        with CaptureError("strategy_kw", log_level="warning") as ctx:
             r = (call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.7)
                  if client_gemini else
                  call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
                           model=model_gpt, temperature=0.7))
-            return [k.strip().lstrip("•-*1234567890. ") for k in r.split("\n") if k.strip() and len(k.strip()) > 2][:5]
+            items = [k.strip().lstrip("•-*1234567890. ") for k in r.split("\n") if k.strip() and len(k.strip()) > 2][:5]
+            if items:
+                return items
         return ["분석 중 오류"]
 
     def _geo() -> list[str]:
@@ -363,12 +367,14 @@ JSON 배열만 출력 (다른 텍스트 없이):
             f'홈페이지 개선 방안 3가지.\n'
             f'구체적 문구 수정 또는 구조 변경 제안 포함. 각 항목 2줄 이내. 번호 포함:'
         )
-        with CaptureError("strategy_geo", log_level="warning"):
+        with CaptureError("strategy_geo", log_level="warning") as ctx:
             r = (call_gpt(client_gpt, prompt, system=_system, max_tokens=1000,
                           model=model_gpt, temperature=0.5)
                  if client_gpt else
                  call_gemini(client_gemini, prompt, max_tokens=1000, temperature=0.5))
-            return [g.strip() for g in re.split(r'\n(?=\d+\.)', r) if g.strip()][:3]
+            items = [g.strip() for g in re.split(r'\n(?=\d+\.)', r) if g.strip()][:3]
+            if items:
+                return items
         return ["분석 중 오류"]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
