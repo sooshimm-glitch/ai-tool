@@ -287,7 +287,11 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] svg {{
   background:{_card}; border-radius:12px; padding:14px 16px;
   margin:8px 0; border:1px solid {_border};
 }}
-.strategy-item span {{ font-size:.85rem; color:{_text} !important; }}
+.strategy-item span {{
+  font-size:.85rem; color:{_text} !important;
+  word-break:keep-all; overflow-wrap:break-word;
+  white-space:normal; display:block; line-height:1.6;
+}}
 .blue-ocean-item {{
   background:{_bg2}; border-radius:12px; padding:12px 16px;
   margin:8px 0; border:1px solid {_border};
@@ -1001,14 +1005,24 @@ with tab1:
                 if gem_ci and gem_ci[0] is not None:
                     ci_txt += f" / Gem {gem_ci[0]}~{gem_ci[1]}%"
 
-                cache_icon = "⚡" if r.cache_hit else ""
                 cf_res = content_filter(q, biz_info.brand_name)
-                cf_badge = f"Q{cf_res['score']}"
+                cf_badge = cf_res['score']
+                cache_label = "캐시" if r.cache_hit else ""
+                q_label = f"Q{i+1}. {q[:55]}{'...' if len(q)>55 else ''}"
 
-                with st.expander(
-                    f"{cache_icon}Q{i+1}. {q[:55]}{'...' if len(q)>55 else ''} [{cf_badge}]",
-                    expanded=(i == 0)
-                ):
+                # expander 대신 라벨 직접 렌더링 (arrow_down 버그 우회)
+                st.markdown(f"""
+                <div style="background:{_card};border:1px solid {_border};border-radius:12px;
+                padding:12px 18px;margin:6px 0;display:flex;align-items:center;gap:10px;">
+                  <span style="font-weight:700;font-size:.9rem;color:{_text};flex:1;
+                  word-break:keep-all;">{q_label}</span>
+                  <span style="font-size:.75rem;font-weight:700;
+                  color:{'#10B981' if cf_badge>=70 else '#F59E0B' if cf_badge>=40 else '#EF4444'};">
+                  Q{cf_badge}</span>
+                  {'<span style="font-size:.72rem;color:#6366F1;font-weight:600;">⚡캐시</span>' if r.cache_hit else ''}
+                </div>""", unsafe_allow_html=True)
+
+                with st.expander(f"Q{i+1} 상세보기", expanded=(i == 0)):
                     cc1, cc2, cc3, cc4 = st.columns(4)
                     cc1.metric("GPT",    gpt_v,
                                f"{r.gpt_hits}회/{r.n}" if r.gpt_hits is not None else "—")
@@ -1024,7 +1038,7 @@ with tab1:
                     # 인용 응답 샘플
                     samps = r.gpt_samples + r.gemini_samples
                     if samps:
-                        with st.expander("💬 인용 응답 샘플 (문맥 인식 탐지)", expanded=False):
+                        with st.expander("인용 응답 샘플", expanded=False):
                             for s in samps[:3]:
                                 st.markdown(f"""
                                 <div style="background:#F5F5F5;border-radius:8px;padding:10px 14px;
