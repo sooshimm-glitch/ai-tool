@@ -99,15 +99,19 @@ def generate_target_questions(
                 client_gpt, prompt, system=QUESTION_SYSTEM,
                 max_tokens=600, model=model_gpt, temperature=0.85,
             )
-        elif client_gemini:
+        elif engine == "Gemini" and client_gemini:
             result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.85)
         elif client_gpt:
+            # 요청 엔진 사용 불가 시 GPT로 폴백
             result_str = call_gpt(
                 client_gpt, prompt, system=QUESTION_SYSTEM,
                 max_tokens=600, model=model_gpt, temperature=0.85,
             )
+        elif client_gemini:
+            # GPT도 없으면 Gemini로 폴백
+            result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.85)
 
-    if not result_str and not ctx.ok:
+    if not ctx.ok:
         raise RuntimeError(f"질문 생성 실패: {ctx.error}")
 
     questions = _parse_questions(result_str)
@@ -126,10 +130,10 @@ def _parse_questions(raw: str) -> list[str]:
         ln = ln.strip()
         if not ln:
             continue
-        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
-        clean = re.sub(r'^[-•*]\s*', '', clean)
-        clean = re.sub(r'^\[.*?\]\s*', '', clean)
-        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean).strip()
+        clean = re.sub(r'\*\*(.*?)\*\*', r'\1', ln)       # bold 제거 (먼저)
+        clean = re.sub(r'^[\d]+[.)]\s*', '', clean)        # 앞머리 번호 제거
+        clean = re.sub(r'^[-•*]\s*', '', clean)            # 앞머리 bullet 제거
+        clean = re.sub(r'^\[.*?\]\s*', '', clean).strip()  # 앞머리 [태그] 제거
         if len(clean) > 10:
             if not clean.endswith("?"):
                 clean += "?"
