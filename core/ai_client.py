@@ -79,24 +79,20 @@ def call_gpt(client, prompt: str, system: str = "",
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    with CaptureError("call_gpt", log_level="warning") as ctx:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        result = response.choices[0].message.content.strip()
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    result = response.choices[0].message.content.strip()
 
-        if tracker and hasattr(response, "usage"):
-            tracker.add_gpt(
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-            )
-        return result
-    if not ctx.ok:
-        raise RuntimeError(f"GPT 호출 실패: {ctx.error}")
-    return ""
+    if tracker and hasattr(response, "usage"):
+        tracker.add_gpt(
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        )
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -108,26 +104,22 @@ def call_gemini(model_obj, prompt: str,
                 tracker: Optional[CostTracker] = None) -> str:
     import google.generativeai as genai
 
-    with CaptureError("call_gemini", log_level="warning") as ctx:
-        response = model_obj.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            ),
-        )
-        text = response.text.strip()
+    response = model_obj.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        ),
+    )
+    text = response.text.strip()
 
-        if tracker and hasattr(response, "usage_metadata"):
-            um = response.usage_metadata
-            tracker.add_gemini(
-                getattr(um, "prompt_token_count", 0),
-                getattr(um, "candidates_token_count", 0),
-            )
-        return text
-    if not ctx.ok:
-        raise RuntimeError(f"Gemini 호출 실패: {ctx.error}")
-    return ""
+    if tracker and hasattr(response, "usage_metadata"):
+        um = response.usage_metadata
+        tracker.add_gemini(
+            getattr(um, "prompt_token_count", 0),
+            getattr(um, "candidates_token_count", 0),
+        )
+    return text
 
 
 # ─────────────────────────────────────────────
@@ -143,22 +135,22 @@ class SimResult:
     n:           int
     gpt_ci:      tuple
     gemini_ci:   tuple
-    gpt_samples:    list[str] = field(default_factory=list)
-    gemini_samples: list[str] = field(default_factory=list)
+    gpt_samples:    list = field(default_factory=list)
+    gemini_samples: list = field(default_factory=list)
     cost_summary:   dict = field(default_factory=dict)
     cache_hit:      bool = False
 
     def to_dict(self) -> dict:
         return {
-            "gpt_rate":    self.gpt_rate,
-            "gemini_rate": self.gemini_rate,
-            "avg_rate":    self.avg_rate,
-            "gpt_hits":    self.gpt_hits,
-            "gemini_hits": self.gemini_hits,
-            "n":           self.n,
-            "gpt_ci":      self.gpt_ci,
-            "gemini_ci":   self.gemini_ci,
-            "gpt_samples": self.gpt_samples,
+            "gpt_rate":       self.gpt_rate,
+            "gemini_rate":    self.gemini_rate,
+            "avg_rate":       self.avg_rate,
+            "gpt_hits":       self.gpt_hits,
+            "gemini_hits":    self.gemini_hits,
+            "n":              self.n,
+            "gpt_ci":         self.gpt_ci,
+            "gemini_ci":      self.gemini_ci,
+            "gpt_samples":    self.gpt_samples,
             "gemini_samples": self.gemini_samples,
         }
 
@@ -166,10 +158,10 @@ class SimResult:
 def _adaptive_batch(
     call_fn: Callable[[str], str],
     question: str,
-    brand_variants: list[str],
+    brand_variants: list,
     n: int,
-    early_stop_threshold: float = 0.05,  # 95% 확신이면 조기 종료
-) -> tuple[int, list[str], int]:
+    early_stop_threshold: float = 0.05,
+) -> tuple:
     """
     적응형 배치 실행.
     - 초기 min(10, n) 회 실행 후 점유율 확인
@@ -178,7 +170,7 @@ def _adaptive_batch(
     반환: (hits, samples, actual_n)
     """
     hits = 0
-    samples: list[str] = []
+    samples = []
     actual_n = 0
 
     probe_n = min(10, n)
@@ -200,13 +192,10 @@ def _adaptive_batch(
     # 조기 종료 판단
     lo, hi = wilson_ci(probe_hits, probe_n)
     if (hi < early_stop_threshold * 100) or (lo > (1 - early_stop_threshold) * 100):
-        # 명확한 결과 → 나머지 실행 불필요
         logger.info(
             f"조기 종료: rate={probe_rate:.1%}, CI=[{lo:.1f},{hi:.1f}]% "
             f"({actual_n}/{n}회에서 확신)"
         )
-        hits = probe_hits
-        # 나머지는 probe 비율로 추정
         remaining_hits = round(probe_rate * (n - probe_n))
         hits_total = probe_hits + remaining_hits
         return hits_total, samples, n
@@ -251,8 +240,8 @@ def run_simulation(
             "sim", target_url, question, model_gpt,
             n, ",".join(sorted(brand_variants))
         )
-        cached = cache.get(cache_key)
-        if cached:
+        hit, cached = cache.get(cache_key)
+        if hit and cached:
             logger.info(f"Cache HIT: simulation({question[:30]}...)")
             return SimResult(cache_hit=True, **cached)
 
@@ -330,7 +319,7 @@ def run_simulation(
     )
 
     if use_cache:
-        cache.set(cache_key, result.to_dict(), namespace="sim")
+        cache.set(cache_key, result.to_dict())
 
     return result
 
@@ -338,14 +327,14 @@ def run_simulation(
 def run_all_simulations(
     client_gpt,
     client_gemini,
-    questions: list[str],
+    questions: list,
     target_url: str,
     model_gpt: str,
     n: int = 50,
     biz_info: dict = None,
     tracker: Optional[CostTracker] = None,
     use_cache: bool = True,
-) -> list[SimResult]:
+) -> list:
     """
     N개 질문 병렬 시뮬레이션.
     각 질문은 독립 스레드에서 실행.
@@ -360,15 +349,14 @@ def run_all_simulations(
                 tracker=tracker, use_cache=use_cache,
             )
             results[idx] = r
-            return
 
         # 에러 시 빈 결과
-       if not ctx.ok:
-        results[idx] = SimResult(
-            gpt_rate=None, gemini_rate=None, avg_rate=None,
-            gpt_hits=None, gemini_hits=None,
-            n=n, gpt_ci=(None, None), gemini_ci=(None, None),
-        )
+        if not ctx.ok:
+            results[idx] = SimResult(
+                gpt_rate=None, gemini_rate=None, avg_rate=None,
+                gpt_hits=None, gemini_hits=None,
+                n=n, gpt_ci=(None, None), gemini_ci=(None, None),
+            )
 
     max_workers = min(len(questions), 5)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
