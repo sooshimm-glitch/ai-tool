@@ -41,7 +41,7 @@ from core.schemas import _BAD_INDUSTRIES
 
 # 호환성 래퍼 — pipeline.py가 기대하는 시그니처로 변환
 def _build_biz_prompt(domain: str, crawl_result, search_ctx: str) -> str:
-    clean_text = crawl_result.body_text if crawl_result else ""
+    clean_text = (crawl_result.body_text if crawl_result and crawl_result.body_text else "")
     return _build_classify_prompt(domain, clean_text, search_ctx, "")
 
 logger = get_logger("pipeline")
@@ -297,7 +297,7 @@ def analyze_business_from_crawl(
     if biz_dict:
         industry = biz_dict.get("industry", "")
         is_vague = any(bad in industry.lower() for bad in _BAD_INDUSTRIES)
-        if is_vague and (crawl_result.body_text or search_ctx):
+        if is_vague and ((crawl_result and crawl_result.body_text) or search_ctx):
             retry_ctx = (
                 f"사이트 본문: {crawl_result.body_text[:800]}\n"
                 f"검색 보완: {search_ctx[:500]}"
@@ -366,8 +366,8 @@ def generate_questions_from_state(
     기존 generate_target_questions()는 biz_info만 받고 크롤 데이터를 무시했음.
     이 함수는 실제 사이트 콘텐츠 키워드를 질문에 반영.
     """
-    biz  = state.biz_info
-    crawl = state.crawl_result
+    biz        = state.biz_info
+    crawl_res  = state.crawl_result
 
     if biz is None:
         state.errors.append("question_gen: biz_info 없음")
@@ -377,9 +377,9 @@ def generate_questions_from_state(
 
     # ── 크롤 데이터에서 핵심 키워드 추출 ──
     site_keywords = ""
-    if crawl and crawl.body_text:
+    if crawl_res and crawl_res.body_text:
         # 빈도 높은 명사구 추출 (간단 버전: 2~4단어 연속 명사)
-        body = crawl.body_text[:2000]
+        body = crawl_res.body_text[:2000]
         # 한국어 키워드: 2자 이상 반복 단어
         ko_words = re.findall(r'[가-힣]{2,}', body)
         from collections import Counter
@@ -662,7 +662,7 @@ def run_pipeline(
 
     _cb("biz", f"완료: {state.biz_info.brand_name} | {state.biz_info.industry} | {state.biz_info.confidence}")
 
-    # 경쟁사 병렬 실행 (biz 완료 후, question gen과 동시에)
+    # 경쟁사 병렬 실행 (biz + brand 확정 후 submit)
     _cb("competitors", f"[{market_scope}] 경쟁사 분석 중...")
     comp_future = None
     executor = cf.ThreadPoolExecutor(max_workers=2)
@@ -698,7 +698,7 @@ def run_pipeline(
     # 경쟁사 결과 수집
     with CaptureError("comp_collect", log_level="warning") as ctx:
         state.competitors = comp_future.result(timeout=60)
-    executor.shutdown(wait=False)
+    executor.shutdown(wait=True)
     if not ctx.ok:
         state.errors.append(f"competitors: {ctx.error}")
         state.competitors = []
