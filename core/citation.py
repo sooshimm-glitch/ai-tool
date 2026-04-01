@@ -233,7 +233,7 @@ def detect_citation(response: str, brand_variants: list[str],
 
         if is_korean:
             # 한글은 어절 단위 — 앞뒤 공백/구두점/문장 부호
-            boundary_pat = rf'(?<![가-힣a-z]){re.escape(v_lower)}(?![가-힣a-z])'
+            boundary_pat = rf'(?<![가-힣a-z]){re.escape(v_lower)}(?![가-힣a-z0-9])'
         else:
             boundary_pat = rf'\b{re.escape(v_lower)}\b'
 
