@@ -353,7 +353,7 @@ def run_all_simulations(
     results = [None] * len(questions)
 
     def _sim_one(idx: int, question: str):
-        with CaptureError(f"sim_q{idx}", log_level="warning"):
+        with CaptureError(f"sim_q{idx}", log_level="warning") as ctx:
             r = run_simulation(
                 client_gpt, client_gemini, question, target_url,
                 model_gpt, n=n, biz_info=biz_info,
@@ -363,6 +363,7 @@ def run_all_simulations(
             return
 
         # 에러 시 빈 결과
+    if not ctx.ok:
         results[idx] = SimResult(
             gpt_rate=None, gemini_rate=None, avg_rate=None,
             gpt_hits=None, gemini_hits=None,
