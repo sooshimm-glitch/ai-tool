@@ -186,12 +186,14 @@ def _tier2_requests_bs(url: str) -> Optional[CrawlResult]:
         resp.encoding = resp.apparent_encoding or "utf-8"
         html = resp.text
 
-        # 봇차단 감지
+        # 봇차단 감지 (짧은 응답에서만 체크해 정상 페이지 오탐 방지)
         bot_signals = [
             "자동등록방지", "captcha", "access denied",
-            "prove that you are human", "cloudflare", "ddos-guard"
+            "prove that you are human", "ddos-guard",
+            "checking your browser", "enable javascript and cookies",
         ]
-        if any(s in html.lower() for s in bot_signals):
+        html_lower = html.lower()
+        if len(html) < 5000 and any(s in html_lower for s in bot_signals):
             raise ValueError("봇차단 감지")
 
         if len(html) < 500:
@@ -255,6 +257,8 @@ def _tier3_jina_search(url: str) -> Optional[CrawlResult]:
                     tier_used=3,
                     ok=True,
                 )
+        # 루프가 예외 없이 끝났지만 유효한 응답 없음
+        logger.warning(f"Tier3 전체 쿼리 응답 없음 ({url})")
     if not ctx.ok:
         logger.warning(f"Tier3 실패 ({url}): {ctx.error}")
     return None
@@ -320,9 +324,10 @@ def crawl_search(query: str, use_cache: bool = True) -> str:
     경쟁사 도출, 업종 검증에 사용.
     """
     cache = get_cache()
+    cache_key = cache.make_key("crawl_search", query)
+
     if use_cache:
-        key = cache.make_key("crawl_search", query)
-        cached = cache.get(key)
+        cached = cache.get(cache_key)
         if cached:
             return cached
 
@@ -336,8 +341,7 @@ def crawl_search(query: str, use_cache: bool = True) -> str:
         if r.status_code == 200 and len(r.text) > 200:
             result = r.text[:5000]
             if use_cache:
-                key = cache.make_key("crawl_search", query)
-                cache.set(key, result, namespace="crawl")
+                cache.set(cache_key, result, namespace="crawl")
             return result
 
     return ""
