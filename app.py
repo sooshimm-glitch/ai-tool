@@ -342,7 +342,7 @@ def render_bar_chart(results: list, questions: list[str], title: str = "AI 엔�
     if not results:
         return
 
-    short_q = [q[:18] + "…" if len(q) > 20 else q for q in questions]
+    short_q = [q[:18] + "..." if len(q) > 20 else q for q in questions]
 
     # SimResult 또는 dict 모두 지원
     def _get(r, k, default=None):
@@ -430,11 +430,13 @@ def render_strategy(strategy: dict, target_url: str):
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 🔬 인용 실패 원인 진단")
+        _diag_icons = ["❌", "⚡", "🔧"]
         for i, d in enumerate(strategy.get("diagnoses", [])):
             col = ["#111", "#555", "#888"][i % 3]
+            icon = _diag_icons[i % len(_diag_icons)]
             st.markdown(f"""
             <div class="strategy-item" style="border-left:4px solid {col};">
-              <span>{'❌⚡🔧'[i]} {d}</span>
+              <span>{icon} {d}</span>
             </div>""", unsafe_allow_html=True)
     with c2:
         st.markdown("### 🌊 블루오션 키워드")
@@ -495,9 +497,11 @@ _DEMO_STRATEGY = {
     ],
     "diagnoses":  ["구조화 데이터 마크업 부재로 AI 맥락 파악 어려움","FAQ 섹션 없어 Q&A 기반 인용 기회 손실","핵심 키워드 밀도 경쟁사 대비 40% 낮음"],
     "keywords":   ["AI 인용 최적화 전략 2025","GEO 적용 방법","챗봇 검색 브랜드 노출","LLM 친화적 콘텐츠","AI 답변 출처 선택 조건"],
-    "geo_guides": ["1. FAQ 블록 추가\n홈페이지에 Q&A 형식 서비스 설명 섹션을 추가하세요.",
-                   "2. 구조화 데이터 적용\nJSON-LD로 Organization, FAQPage 스키마를 삽입하세요.",
-                   "3. 핵심 가치 제안 최상단 배치\n명확한 정의 문장으로 AI가 권위 출처로 인식하게 하세요."],
+    "geo_guides": [
+        "1. FAQ 블록 추가\n홈페이지에 Q&A 형식 서비스 설명 섹션을 추가하세요.",
+        "2. 구조화 데이터 적용\nJSON-LD로 Organization, FAQPage 스키마를 삽입하세요.",
+        "3. 핵심 가치 제안 최상단 배치\n명확한 정의 문장으로 AI가 권위 출처로 인식하게 하세요.",
+    ],
 }
 
 
