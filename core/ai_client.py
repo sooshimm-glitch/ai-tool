@@ -94,8 +94,9 @@ def call_gpt(client, prompt: str, system: str = "",
                 response.usage.completion_tokens,
             )
         return result
-
-    raise RuntimeError(f"GPT 호출 실패: {ctx.error}")
+    if not ctx.ok:
+        raise RuntimeError(f"GPT 호출 실패: {ctx.error}")
+    return ""
 
 
 # ─────────────────────────────────────────────
@@ -124,8 +125,9 @@ def call_gemini(model_obj, prompt: str,
                 getattr(um, "candidates_token_count", 0),
             )
         return text
-
-    raise RuntimeError(f"Gemini 호출 실패: {ctx.error}")
+    if not ctx.ok:
+        raise RuntimeError(f"Gemini 호출 실패: {ctx.error}")
+    return ""
 
 
 # ─────────────────────────────────────────────
