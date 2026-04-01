@@ -363,7 +363,7 @@ def run_all_simulations(
             return
 
         # 에러 시 빈 결과
-    if not ctx.ok:
+       if not ctx.ok:
         results[idx] = SimResult(
             gpt_rate=None, gemini_rate=None, avg_rate=None,
             gpt_hits=None, gemini_hits=None,
