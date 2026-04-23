@@ -92,25 +92,65 @@ def call_gpt(
 # Gemini 호출
 # ─────────────────────────────────────────────
 
+def _get_gemini_search_tool(genai):
+    """Google Search Grounding 도구 반환. API 버전별 fallback 포함."""
+    try:
+        return [genai.protos.Tool(google_search=genai.protos.GoogleSearch())]
+    except AttributeError:
+        pass
+    try:
+        return [genai.protos.Tool(
+            google_search_retrieval=genai.protos.GoogleSearchRetrieval()
+        )]
+    except AttributeError:
+        pass
+    return None
+
+
 def call_gemini(
     model_obj,
     prompt: str,
     max_tokens: int = 300,
     temperature: float = 0.7,
     tracker: Optional[CostTracker] = None,
+    use_search: bool = False,
 ) -> str:
+    """
+    Gemini API 호출.
+
+    use_search=True: Google Search Grounding 활성화.
+    웹 인터페이스처럼 실시간 검색 결과를 참조하여 로컬 비즈니스도 인용함.
+    search 활성화 시 temperature는 API 제약으로 미전달.
+    """
     import google.generativeai as genai
 
-    response = model_obj.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
+    search_tools = _get_gemini_search_tool(genai) if use_search else None
+
+    if search_tools:
+        gen_config = genai.types.GenerationConfig(max_output_tokens=max_tokens)
+    else:
+        gen_config = genai.types.GenerationConfig(
             max_output_tokens=max_tokens,
             temperature=temperature,
-        ),
-    )
-    text = response.text.strip()
+        )
 
-    if tracker and hasattr(response, "usage_metadata"):
+    response = None
+    try:
+        if search_tools:
+            response = model_obj.generate_content(
+                prompt, tools=search_tools, generation_config=gen_config,
+            )
+        else:
+            response = model_obj.generate_content(
+                prompt, generation_config=gen_config,
+            )
+        text = response.text.strip()
+    except (ValueError, AttributeError):
+        text = ""
+    except Exception:
+        text = ""
+
+    if response and tracker and hasattr(response, "usage_metadata"):
         um = response.usage_metadata
         tracker.add_gemini(
             getattr(um, "prompt_token_count", 0),
@@ -241,9 +281,12 @@ def run_simulation(
     def _gem_call(q: str) -> str:
         return call_gemini(
             client_gemini, q,
-            max_tokens=180,
+            max_tokens=300,          # search 응답은 더 길 수 있음
             temperature=0.6,
             tracker=tracker,
+            use_search=True,         # Google Search Grounding 활성화
+                                     # → 웹 인터페이스와 동일하게 실시간 검색 참조
+                                     # → 로컬 비즈니스, 최신 정보 인용 정확도 향상
         )
 
     gpt_hits, gpt_samples, gpt_n = 0, [], 0
