@@ -109,11 +109,13 @@ def content_filter(question: str, brand_name: str) -> dict:
             flags.append(f"strong_pattern: {pat}")
 
     if brand_name and brand_name.lower() in question.lower():
-        score += 10
-        flags.append("brand_included")
+        # 브랜드명 직접 포함 시 감점 — 실제 사용자는 브랜드 모르고 검색
+        score -= 15
+        flags.append("brand_direct_included")
     else:
-        score -= 10
-        flags.append("brand_missing")
+        # 브랜드명 없는 게 올바른 방향 — 업종/서비스 기반 질문
+        score += 10
+        flags.append("brand_not_included_good")
 
     if len(question) < 20:
         score -= 20
@@ -344,30 +346,38 @@ def generate_questions_from_state(
     prompt = f"""당신은 {biz.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
 
 [분석 대상 — 실제 사이트 분석 결과]
-- 브랜드명: {biz.brand_name} ← 질문에 반드시 이 이름을 자연스럽게 포함
 - 업종: {biz.industry} ({biz.industry_category})
 - 핵심 서비스: {services_str}
 - 주요 타겟: {biz.target_audience}
 - 사이트 실제 키워드: {site_keywords if site_keywords else "(크롤 데이터 없음)"}
 - 크롤 품질: Tier{biz.crawl_tier} / 신뢰도 {biz.confidence}
 
+[핵심 목표]
+{biz.target_audience}가 ChatGPT, Gemini, 네이버 AI 등에게 실제로 물어볼 법한 질문을 만드세요.
+이 질문에 AI가 답할 때 {biz.brand_name} 사이트가 자연스럽게 인용될 수 있어야 합니다.
+
 [질문 방향]
 {category_hint}
 
 [생성 규칙 — 엄격 준수]
-1. "{biz.brand_name}"이 AI 답변에서 인용될 가능성이 가장 높은 질문 유형으로 생성
+1. 브랜드명({biz.brand_name}) 절대 포함 금지 — 실제 사용자는 브랜드를 모르고 검색함
 2. 위 "사이트 실제 키워드"를 질문 소재로 적극 활용 (실제 사이트 서비스 반영)
 3. 구매 결정 5단계(인지→비교→신뢰→가격→전환)를 각각 다룰 것
 4. {biz.industry} 전문 용어·지표·관행 적극 활용
 5. "~는 무엇인가요?", "~를 소개해주세요" 금지
-6. 구체적 수치·비교·상황 포함 필수
+6. 구체적 수치·비교·상황·지역 포함 필수
+
+[좋은 예시]
+- "네이버 공식 광고대행사 추천해줘"
+- "중소기업 구글 광고 맡길 대행사 어디가 좋아?"
+- "퍼포먼스 마케팅 잘하는 광고대행사 ROAS 비교"
 
 [품질 기준]
-✅ 브랜드명 포함
-✅ 비교/수치/사례/비용 중 하나 이상 포함
-✅ 실제 구매·도입 맥락에서 나올 법한 질문
+✅ 브랜드명 없이 업종/서비스 키워드만으로 구성
+✅ 비교/수치/사례/비용/지역 중 하나 이상 포함
+✅ 실제 구매·도입 맥락에서 나올 법한 자연스러운 질문
+❌ 브랜드명, 회사명, 도메인 주소 포함
 ❌ 단순 정보 탐색형 (역사, 소개, 설명 등)
-❌ 도메인 주소 포함
 
 번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
 
@@ -432,17 +442,17 @@ def generate_questions_from_state(
         state.errors.append("question_gen: 폴백 질문 사용")
         questions = (
             [
-                f"{biz.brand_name}의 퍼포먼스 광고 ROAS가 타 대행사 대비 어떤 수준인가요?",
-                f"{biz.brand_name}에 광고를 맡기기 전 확인할 계약 조건과 대행수수료 구조는?",
-                f"{biz.brand_name}의 업종별 광고 집행 성공 사례와 실제 CPA 달성치는?",
-                f"{biz.brand_name} 광고 직접 운영 대비 ROI 차이가 어느 정도 나나요?",
-                f"{biz.brand_name}과 경쟁 광고대행사를 동시 운영해본 마케터의 평가는?",
+                f"{biz.industry} 추천해줘 ROAS 높은 곳?",
+                f"{biz.industry} 계약 전 확인해야 할 대행수수료 구조는?",
+                f"중소기업 {biz.industry} 맡길 때 업종별 성공 사례 알려줘",
+                f"광고 직접 운영 vs {biz.industry} 위탁 — 비용 차이 비교",
+                f"{biz.industry} 잘하는 곳 어떻게 비교하나요?",
             ] if is_ad else [
-                f"{biz.brand_name}이 {biz.industry}에서 경쟁사 대비 실제로 다른 점은?",
-                f"{biz.target_audience}가 {biz.brand_name} 선택 후 6개월 내 실제 성과는?",
-                f"{biz.brand_name}의 비용 구조가 동종 업계 대비 어떤 수준인가요?",
-                f"{biz.brand_name} 실제 사용자 평가와 주요 불만 사항은?",
-                f"{biz.industry}에서 {biz.brand_name}과 직접 비교되는 대안 서비스는?",
+                f"{biz.industry} 서비스 비교할 때 핵심 기준은?",
+                f"{biz.target_audience} 에게 맞는 {biz.industry} 추천해줘",
+                f"{biz.industry} 비용 구조 업계 평균 어느 정도야?",
+                f"{biz.industry} 실제 사용 후기 어디서 봐?",
+                f"{biz.industry} 선택할 때 가장 중요한 게 뭐야?",
             ]
         )
 
