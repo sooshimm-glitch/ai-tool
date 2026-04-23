@@ -800,8 +800,8 @@ def get_clients():
 
 st.markdown("""
 <div class="main-header">
-    <h1>🔍 AI 검색 점유율 분석 대시보드</h1>
-    <p>GPT &amp; Gemini AI 엔진에서 내 사이트 인용 점유율 측정 — 비용 최적화 · 문맥 인식 · 3단계 크롤링</p>
+    <h1 style="color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; text-shadow:0 1px 3px rgba(0,0,0,.3);">🔍 AI 검색 점유율 분석 대시보드</h1>
+    <p style="color:rgba(255,255,255,.85) !important; font-size:1rem !important; margin:8px 0 0 !important;">GPT &amp; Gemini AI 엔진에서 내 사이트 인용 점유율 측정 — 비용 최적화 · 문맥 인식 · 3단계 크롤링</p>
 </div>""", unsafe_allow_html=True)
 
 col1, col2, col3, col4, col5 = st.columns(5)
