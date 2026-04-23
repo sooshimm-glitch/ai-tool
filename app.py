@@ -43,7 +43,6 @@ import streamlit as st
 import time
 import re
 import json
-import concurrent.futures
 import pandas as pd
 import plotly.graph_objects as go
 from urllib.parse import urlparse
@@ -963,64 +962,47 @@ if run_clicked:
     prog_bar   = prog_container.progress(0)
     prog_text  = prog_container.empty()
 
-    t_start = time.time()
-
-    # ── 시뮬레이션 + 전략 분석 병렬 실행 ──
-    sim_results  = [None] * len(questions)
-    strategy     = {}
-    n_engines    = (1 if client_gpt else 0) + (1 if client_gemini else 0)
+    t_start    = time.time()
+    n_engines  = (1 if client_gpt else 0) + (1 if client_gemini else 0)
 
     prog_text.markdown(f"🚀 **시뮬레이션 시작** — {len(questions)}개 질문 × {sim_count}회 × {n_engines}엔진")
     prog_bar.progress(0.05)
 
-    def _run_sims():
-        return run_all_simulations(
+    # ── Step 1: 시뮬레이션 단독 실행 ──
+    # 전략 분석과 동시 실행하면 Gemini Rate Limit 초과 → 전략 분석 전체 실패
+    # 순차 실행으로 변경
+    with CaptureError("sim_run", log_level="warning") as ctx:
+        sim_results = run_all_simulations(
             client_gpt, client_gemini, questions, target_url,
             model_gpt=gpt_model, n=sim_count,
             biz_info=biz_info.to_dict(),
             tracker=tracker,
             use_cache=True,
         )
+    if not ctx.ok:
+        st.error(f"시뮬레이션 오류: {ctx.error}")
+        st.stop()
 
-    def _run_strategy():
-        if not questions:
-            return {}
-        return run_strategy_analysis(
-            client_gpt, client_gemini,
-            question=questions[0],
-            target_url=target_url,
-            model_gpt=gpt_model,
-            biz_info=biz_info,
-            market_scope=market_scope,
-            use_cache=True,
-        )
+    elapsed_sim = int(time.time() - t_start)
+    prog_bar.progress(0.75)
+    prog_text.markdown(f"✅ 시뮬레이션 완료 ({elapsed_sim}초) | 🔍 전략 분석 시작…")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        f_sim      = ex.submit(_run_sims)
-        f_strategy = ex.submit(_run_strategy)
-
-        # 시뮬레이션 완료 대기 + 진행률 업데이트
-        while not f_sim.done():
-            time.sleep(0.8)
-            elapsed = time.time() - t_start
-            prog_pct = min(0.05 + (elapsed / max(sim_count * len(questions) * 0.5, 10)) * 0.7, 0.75)
-            prog_bar.progress(prog_pct)
-            prog_text.markdown(f"⚙️ 시뮬레이션 진행 중… ({elapsed:.0f}초 경과)")
-
-        with CaptureError("sim_collect", log_level="warning") as ctx:
-            sim_results = f_sim.result(timeout=10)
-        if not ctx.ok:
-            st.error(f"시뮬레이션 오류: {ctx.error}")
-            st.stop()
-
-        prog_bar.progress(0.80)
-        prog_text.markdown("🔍 전략 분석 중 (경쟁사 · 키워드 · GEO 가이드)…")
-
-        with CaptureError("strategy_collect", log_level="warning") as ctx:
-            strategy = f_strategy.result(timeout=90)
+    # ── Step 2: 전략 분석 (시뮬레이션 완료 후 순차 실행) ──
+    strategy = {}
+    if questions:
+        with CaptureError("strategy_run", log_level="warning") as ctx:
+            strategy = run_strategy_analysis(
+                client_gpt, client_gemini,
+                question=questions[0],
+                target_url=target_url,
+                model_gpt=gpt_model,
+                biz_info=biz_info,
+                market_scope=market_scope,
+                use_cache=True,
+            )
         if not ctx.ok:
             strategy = {}
-            st.warning("전략 분석 일부 실패 — 결과가 불완전할 수 있습니다.")
+            st.warning(f"⚠️ 전략 분석 실패 (재시도하세요): {ctx.error}")
 
     elapsed_total = int(time.time() - t_start)
     prog_bar.progress(1.0)
@@ -1081,6 +1063,25 @@ margin-bottom:20px;display:flex;align-items:center;justify-content:space-between
     캐시 히트율 {_cache.stats()['hit_rate']}%
   </div>
 </div>""", unsafe_allow_html=True)
+
+    # ── 0. 0% 인용률 사용자 안내 ──
+    all_rates = []
+    for r in results:
+        v = r.get('gemini_rate') if isinstance(r, dict) else getattr(r, 'gemini_rate', None)
+        if v is not None: all_rates.append(v)
+        v2 = r.get('gpt_rate') if isinstance(r, dict) else getattr(r, 'gpt_rate', None)
+        if v2 is not None: all_rates.append(v2)
+
+    avg_all = sum(all_rates) / len(all_rates) if all_rates else 0
+    if avg_all == 0 and not is_demo:
+        st.warning(
+            "📌 **인용 점유율이 0%입니다.** 가능한 원인:\n"
+            "① 질문에 **브랜드명**이 포함되지 않아 AI 응답에서 탐지가 안 됨\n"
+            "② 해당 브랜드가 아직 AI 학습 데이터에 충분히 없음\n"
+            "③ Gemini API만 사용 중이고 GPT 키가 없어 교차 검증이 안 됨\n\n"
+            "**해결책**: 질문에 브랜드명을 자연스럽게 포함시켜 보세요.\n"
+            "예) '네이버 쇼핑과 쿠팡 배송 속도 비교?' → 브랜드명 포함"
+        )
 
     # ── 1. 인용 점유율 차트 ──
     render_bar_chart(results, questions, brand)
