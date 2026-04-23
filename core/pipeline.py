@@ -479,7 +479,7 @@ def run_pipeline(
     confirmed_brand: str = "",
     q_engine: str = "GPT",
     market_scope: str = "국내 (대한민국)",
-    n_competitors: int = 5,
+    n_competitors: int = 3,  # 고정값 — 항상 3개만 도출
     tracker: Optional[CostTracker] = None,
     use_cache: bool = True,
     debug: bool = False,
