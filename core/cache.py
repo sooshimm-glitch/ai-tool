@@ -1,139 +1,97 @@
+#!/usr/bin/env python3
 """
-캐싱 레이어 — TTL 기반 인메모리 캐시
+cache_fix_patch.py
+------------------
+competitor_finder.py 와 industry_classifier.py 의
+  if cached:  →  if cached is not None:
+패치를 적용합니다.
 
-비용 폭탄 방지: 동일 URL/질문 결과를 TTL(기본 1시간) 동안 재사용
+사용법:
+  python3 cache_fix_patch.py <repo_root>
 
-버그 수정 (v1.1):
-  [FIX] get() 반환 타입을 Optional[Any]로 통일.
-        기존 코드에서 `hit, cached = cache.get(key)` 형태의 tuple unpacking을 시도했으나
-        cache.get()은 단일 값을 반환하므로 TypeError가 발생했음.
-        → ai_client.py, pipeline.py의 모든 호출부를 `cached = cache.get(key)` 패턴으로 수정.
+예시:
+  python3 cache_fix_patch.py /path/to/ai-tool
 """
 
-import hashlib
-import time
-import json
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Optional
+import sys
+import re
+from pathlib import Path
 
 
-@dataclass
-class CacheEntry:
-    value: Any
-    created_at: float
-    ttl: float  # seconds
-
-    @property
-    def is_expired(self) -> bool:
-        return time.time() - self.created_at > self.ttl
-
-
-class TTLCache:
-    """
-    Thread-safe TTL 캐시.
-
-    - sim_results: 시뮬레이션 결과 (TTL 3600s)
-    - biz_info: 비즈니스 분석 결과 (TTL 86400s — 하루)
-    - competitors: 경쟁사 목록 (TTL 86400s)
-    - crawl: 크롤링 결과 (TTL 3600s)
-
-    주의: get()은 Optional[Any]를 반환합니다.
-    캐시 히트 확인 방법:
-        cached = cache.get(key)
-        if cached is not None:
-            # 캐시 히트
-    """
-
-    DEFAULT_TTL = {
-        "sim": 3600,
-        "biz": 86400,
-        "competitors": 86400,
-        "crawl": 3600,
-        "strategy": 7200,
-    }
-
-    def __init__(self):
-        self._store: dict[str, CacheEntry] = {}
-        self._lock = threading.RLock()
-        self._hits = 0
-        self._misses = 0
-
-    # ── 키 생성 ──
-
-    @staticmethod
-    def make_key(namespace: str, *parts) -> str:
-        raw = namespace + "|" + "|".join(str(p) for p in parts)
-        return hashlib.sha256(raw.encode()).hexdigest()[:24]
-
-    # ── CRUD ──
-
-    def get(self, key: str) -> Optional[Any]:
-        """
-        캐시에서 값을 가져옵니다.
-        캐시 미스 또는 만료 시 None 반환.
-        캐시 히트 여부: `if cache.get(key) is not None`
-        """
-        with self._lock:
-            entry = self._store.get(key)
-            if entry is None or entry.is_expired:
-                if entry:
-                    del self._store[key]
-                self._misses += 1
-                return None
-            self._hits += 1
-            return entry.value
-
-    def set(self, key: str, value: Any, namespace: str = "sim") -> None:
-        ttl = self.DEFAULT_TTL.get(namespace, 3600)
-        with self._lock:
-            self._store[key] = CacheEntry(value=value, created_at=time.time(), ttl=ttl)
-
-    def invalidate(self, key: str) -> None:
-        with self._lock:
-            self._store.pop(key, None)
-
-    def clear_expired(self) -> int:
-        with self._lock:
-            expired = [k for k, v in self._store.items() if v.is_expired]
-            for k in expired:
-                del self._store[k]
-            return len(expired)
-
-    def stats(self) -> dict:
-        with self._lock:
-            total = self._hits + self._misses
-            return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "hit_rate": round(self._hits / total * 100, 1) if total else 0.0,
-                "entries": len(self._store),
-            }
-
-    def to_serializable(self) -> dict:
-        """Streamlit session_state 저장용 직렬화"""
-        with self._lock:
-            return {
-                k: {"value": v.value, "created_at": v.created_at, "ttl": v.ttl}
-                for k, v in self._store.items()
-                if not v.is_expired
-            }
-
-    @classmethod
-    def from_serializable(cls, data: dict) -> "TTLCache":
-        cache = cls()
-        for k, v in data.items():
-            cache._store[k] = CacheEntry(
-                value=v["value"],
-                created_at=v["created_at"],
-                ttl=v["ttl"],
-            )
-        return cache
+PATCHES = {
+    "core/competitor_finder.py": [
+        (
+            # 원본
+            "    if use_cache:\n"
+            "        cached = cache.get(cache_key)\n"
+            "        if cached:\n"
+            "            logger.info(f\"Cache HIT: competitors({domain})\")\n"
+            "            return [Competitor(**c) for c in cached]",
+            # 수정
+            "    if use_cache:\n"
+            "        cached = cache.get(cache_key)\n"
+            "        if cached is not None:  # [FIX] None 명시 비교 — 빈 리스트도 유효한 캐시값\n"
+            "            logger.info(f\"Cache HIT: competitors({domain})\")\n"
+            "            return [Competitor(**c) for c in cached]",
+        ),
+    ],
+    "core/industry_classifier.py": [
+        (
+            # 원본
+            "    if use_cache:\n"
+            "        cached = get_cache().get(cache_key)\n"
+            "        if cached:\n"
+            "            logger.info(f\"Cache HIT: classify_industry({domain})\")\n"
+            "            return BusinessInfo.from_dict(cached)",
+            # 수정
+            "    if use_cache:\n"
+            "        cached = get_cache().get(cache_key)\n"
+            "        if cached is not None:  # [FIX] None 명시 비교 — 빈 dict도 유효한 캐시값\n"
+            "            logger.info(f\"Cache HIT: classify_industry({domain})\")\n"
+            "            return BusinessInfo.from_dict(cached)",
+        ),
+    ],
+}
 
 
-# 전역 싱글톤
-_global_cache = TTLCache()
+def apply_patches(repo_root: Path):
+    success = []
+    failed = []
+
+    for rel_path, replacements in PATCHES.items():
+        fpath = repo_root / rel_path
+        if not fpath.exists():
+            print(f"[SKIP]  {rel_path} — 파일 없음")
+            failed.append(rel_path)
+            continue
+
+        src = fpath.read_text(encoding="utf-8")
+        patched = src
+
+        for old, new in replacements:
+            if old in patched:
+                patched = patched.replace(old, new, 1)
+                print(f"[OK]    {rel_path} — 패치 적용됨")
+                success.append(rel_path)
+            else:
+                # 이미 수정됐거나 구조가 다름
+                if "is not None" in patched:
+                    print(f"[SKIP]  {rel_path} — 이미 수정된 것으로 보임")
+                else:
+                    print(f"[WARN]  {rel_path} — 패턴 불일치, 수동 확인 필요")
+                    failed.append(rel_path)
+
+        if patched != src:
+            fpath.write_text(patched, encoding="utf-8")
+
+    print(f"\n결과: 성공 {len(success)}개 / 실패 {len(failed)}개")
+    if failed:
+        print("수동 수정 필요:", failed)
+        print("\n수동 수정 방법 (두 파일 모두 동일):")
+        print("  if cached:          # 이 줄을")
+        print("  if cached is not None:  # 이렇게 변경")
 
 
-def get_cache() -> TTLCache:
-    return _global_cache
+if __name__ == "__main__":
+    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
+    apply_patches(root)
