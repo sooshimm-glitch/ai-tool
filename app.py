@@ -847,24 +847,22 @@ with tab1:
     <div class="result-card" style="background:{'linear-gradient(135deg,#1E1E1E,#252525)' if _dark else 'linear-gradient(135deg,#F5F5F5,#EEE)'};border-color:{_border};">
         <h4>🤖 AI 타겟 질문 자동 도출 방식</h4>
         <p style="color:{_text_muted};font-size:.88rem;margin:0;line-height:1.6;">
-            <b>파이프라인:</b> Crawl → Biz 분석 → 경쟁사(병렬) → 질문 생성(크롤 컨텍스트 반영) → Citation Spot-Check → 시뮬레이션<br>
-            <b>개선</b>: 크롤 데이터 전 단계 공유 · Content Filter · 문맥 인식 탐지 · TTL 캐시 · Debug 모드
+            <b>파이프라인:</b> Crawl → 경쟁사(병렬) → 질문 생성 → Citation Spot-Check → 시뮬레이션<br>
+            <b>브랜드명과 업종을 직접 입력하면 분석 정확도가 높아집니다.</b>
         </p>
     </div>""", unsafe_allow_html=True)
 
     col_u, col_i, col_b = st.columns([2, 1, 1])
 
     with col_u:
-        url_auto = st.text_input("🌐 사이트 URL", placeholder="예) naver.com", key="url_auto")
+        url_auto = st.text_input("🌐 사이트 URL *", placeholder="예) naver.com", key="url_auto")
 
     with col_i:
-        # BUG FIX: value= 와 key= 동시 사용 시 rerun 후 위젯이 사라지는 문제 해결
-        # → session_state 키를 직접 사용하되, 초기화는 한 번만 수행
         if "industry_widget" not in st.session_state:
             st.session_state["industry_widget"] = st.session_state.get("industry_display", "")
         manual_industry = st.text_input(
-            "🏭 업종 확인·수정",
-            placeholder="AI 자동 분석 → 직접 수정 가능",
+            "🏭 업종 (필수입력) *",
+            placeholder="예) 퍼포먼스 마케팅 광고대행사",
             key="industry_widget",
         )
         st.session_state["industry_display"] = st.session_state["industry_widget"]
@@ -873,23 +871,28 @@ with tab1:
         if "brand_widget" not in st.session_state:
             st.session_state["brand_widget"] = st.session_state.get("brand_display", "")
         st.text_input(
-            "🏷️ 브랜드명 확인·수정",
-            placeholder="AI 자동 추출 → 직접 수정 가능",
+            "🏷️ 브랜드명 (필수입력) *",
+            placeholder="예) 프로그레스미디어",
             key="brand_widget",
         )
         st.session_state["brand_display"] = st.session_state["brand_widget"]
 
-    c_pre, c_run, c_demo = st.columns([1, 2, 1])
-    with c_pre:
-        pre_clicked = st.button("🔍 업종 미리 분석", key="btn_pre", use_container_width=True)
+    # 입력 안내
+    if not st.session_state.get("industry_widget") or not st.session_state.get("brand_widget"):
+        st.info("💡 업종과 브랜드명을 직접 입력하면 분석 정확도가 크게 올라가요!")
+
+    c_run, c_demo = st.columns([3, 1])
     with c_run:
         run_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
     with c_demo:
         demo_auto = st.button("🎬 데모", key="btn_demo_auto", use_container_width=True)
 
+    # pre_clicked 는 제거됐으므로 항상 False
+    pre_clicked = False
+
     q_engine = st.radio("질문 도출 엔진", ["GPT", "Gemini"], horizontal=True)
 
-    # ── 업종 미리 분석 ──
+    # ── 업종 미리 분석 (제거 — 사용자 직접 입력 방식으로 전환) ──
     if pre_clicked:
         if not url_auto.strip():
             st.warning("URL을 먼저 입력하세요.")
@@ -1228,7 +1231,7 @@ with tab1:
                     c1.metric("GPT",    gpt_v)
                     c2.metric("Gemini", gem_v)
                     c3.metric("평균",   f"{avg:.1f}%")
-                    if gpt_ci:
+                    if gpt_ci and gpt_ci[0] is not None and gpt_ci[1] is not None:
                         c4.metric("95% CI", f"{gpt_ci[0]:.1f}~{gpt_ci[1]:.1f}%")
 
                     st.markdown(
