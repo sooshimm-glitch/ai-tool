@@ -1,23 +1,13 @@
 """
 pipeline.py — Crawler → Biz → Question 통합 오케스트레이터
 
-핵심 문제:
-  App이 crawl() 결과를 버리고 analyze_business()가 내부에서 다시 crawl()을 호출함.
-  analyze_business() 결과를 generate_questions()가 crawl 컨텍스트 없이 받음.
-  경쟁사 분석이 시뮬레이션 끝난 뒤에 직렬로 실행됨.
-
-해결:
-  AnalysisPipeline 단일 진입점으로 통합.
-  crawl_result를 pipeline 전체에서 공유.
-  경쟁사 분석을 crawl과 병렬로 선제 실행.
-  Citation 정확도 검증 레이어 (spot-check).
-  Content filter로 AI 생성 질문 품질 게이트.
-  Debug 모드: 각 단계 입출력 전부 노출.
-
-버그 수정 (v2.1):
-  [FIX 1] ThreadPoolExecutor를 try/finally로 감싸서 예외 발생 시에도 shutdown() 보장.
-  [FIX 2] CrawlResult 중복 import 제거.
-  [FIX 3] biz 캐시 히트 시 _cb() 호출 누락 수정.
+수정 사항 (버그픽스):
+1. ThreadPoolExecutor 누수 — try/finally로 항상 shutdown 보장
+2. comp_future None 체크 추가
+3. 캐시 히트 시 _do_competitors()가 biz_info 없이 실행되는 버그 수정
+4. CrawlResult 역직렬화 누락 필드 방어 처리 (get + 기본값)
+5. render_debug_panel 마크다운 이스케이프 수정
+6. question 캐시 히트 후 재진입 방어
 """
 
 from __future__ import annotations
@@ -28,10 +18,11 @@ import time
 import concurrent.futures as cf
 from dataclasses import dataclass, field
 from typing import Optional
+from collections import Counter
 
 from core.logger import get_logger, CaptureError
 from core.cache import get_cache
-from core.crawler import crawl, crawl_search, CrawlResult  # CrawlResult 한 번만 import
+from core.crawler import crawl, crawl_search, CrawlResult
 from core.citation import (
     build_brand_variants, detect_citation, CitationResult, wilson_ci
 )
@@ -44,15 +35,16 @@ from core.biz_analysis import (
 from core.industry_classifier import _BIZ_SYSTEM, _build_classify_prompt
 from core.schemas import _BAD_INDUSTRIES
 
-# 호환성 래퍼 — pipeline.py가 기대하는 시그니처로 변환
+# 호환성 래퍼
 def _build_biz_prompt(domain: str, crawl_result, search_ctx: str) -> str:
     clean_text = (crawl_result.body_text if crawl_result and crawl_result.body_text else "")
     return _build_classify_prompt(domain, clean_text, search_ctx, "")
 
 logger = get_logger("pipeline")
 
+
 # ─────────────────────────────────────────────
-# 파이프라인 상태 — 전 단계 결과를 단일 객체로 전달
+# 파이프라인 상태
 # ─────────────────────────────────────────────
 
 @dataclass
@@ -64,7 +56,6 @@ class PipelineState:
     biz_info: Optional[BusinessInfo] = None
     competitors: list[Competitor] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
-    # citation spot-check 결과
     spot_check: dict = field(default_factory=dict)
     debug_log: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -76,8 +67,9 @@ class PipelineState:
     def record_time(self, stage: str, elapsed: float):
         self.timing[stage] = round(elapsed, 2)
 
+
 # ─────────────────────────────────────────────
-# Content Filter — 질문 품질 게이트
+# Content Filter
 # ─────────────────────────────────────────────
 
 _WEAK_PATTERNS = [
@@ -92,7 +84,7 @@ _WEAK_PATTERNS = [
 ]
 
 _STRONG_PATTERNS = [
-    r"\d+\s*%",                              # 수치 포함
+    r"\d+\s*%",
     r"(?:비교|대비|vs\.?|versus)",
     r"(?:ROAS|CPA|CTR|ROI|CPM|CPV)",
     r"(?:비용|수수료|가격|요금|단가)",
@@ -101,37 +93,30 @@ _STRONG_PATTERNS = [
     r"(?:how\s+much|compare|versus|case\s+study|pricing)",
 ]
 
-
 def content_filter(question: str, brand_name: str) -> dict:
-    """
-    질문 품질 평가.
-    반환: {score: 0-100, pass: bool, reason: str, flags: list}
-    """
     score = 50
     flags = []
 
-    # 약한 패턴 감점
     for pat in _WEAK_PATTERNS:
         if re.search(pat, question, re.IGNORECASE):
             score -= 20
             flags.append(f"weak_pattern: {pat}")
             break
 
-    # 강한 패턴 가점
     for pat in _STRONG_PATTERNS:
         if re.search(pat, question, re.IGNORECASE):
             score += 15
             flags.append(f"strong_pattern: {pat}")
 
-    # 브랜드명 포함 여부
     if brand_name and brand_name.lower() in question.lower():
-        score += 10
-        flags.append("brand_included")
+        # 브랜드명 직접 포함 시 감점 — 실제 사용자는 브랜드 모르고 검색
+        score -= 15
+        flags.append("brand_direct_included")
     else:
-        score -= 10
-        flags.append("brand_missing")
+        # 브랜드명 없는 게 올바른 방향 — 업종/서비스 기반 질문
+        score += 10
+        flags.append("brand_not_included_good")
 
-    # 길이 체크
     if len(question) < 20:
         score -= 20
         flags.append("too_short")
@@ -139,7 +124,6 @@ def content_filter(question: str, brand_name: str) -> dict:
         score -= 5
         flags.append("too_long")
 
-    # 물음표 있어야 함
     if not question.strip().endswith("?"):
         score -= 10
         flags.append("no_question_mark")
@@ -149,8 +133,9 @@ def content_filter(question: str, brand_name: str) -> dict:
     reason = "pass" if passed else f"low_score({score}): " + ", ".join(flags[:2])
     return {"score": score, "pass": passed, "reason": reason, "flags": flags}
 
+
 # ─────────────────────────────────────────────
-# Citation Spot-Check — 시뮬레이션 전 정확도 검증
+# Citation Spot-Check
 # ─────────────────────────────────────────────
 
 def citation_spot_check(
@@ -174,7 +159,6 @@ def citation_spot_check(
             elif client_gemini:
                 resp = call_gemini(client_gemini, prompt, max_tokens=200,
                                    temperature=0.6, tracker=tracker)
-
         if not resp:
             continue
 
@@ -204,11 +188,9 @@ def citation_spot_check(
     else:
         fp_risk = "low"
 
-    suspect = [v for v in brand_variants if len(v) <= 3 or
-               v.lower() in {"app", "net", "web", "the", "inc", "co"}]
-    refined = [v for v in brand_variants if v not in suspect]
-    if not refined:
-        refined = brand_variants
+    suspect  = [v for v in brand_variants if len(v) <= 3 or
+                v.lower() in {"app", "net", "web", "the", "inc", "co"}]
+    refined  = [v for v in brand_variants if v not in suspect] or brand_variants
 
     return {
         "hit_rate": round(hit_rate, 1),
@@ -219,8 +201,9 @@ def citation_spot_check(
         "n_samples": len(samples),
     }
 
+
 # ─────────────────────────────────────────────
-# 핵심: Biz 분석 with CrawlResult 직접 수신
+# Biz 분석 (CrawlResult 직접 수신)
 # ─────────────────────────────────────────────
 
 def analyze_business_from_crawl(
@@ -229,17 +212,13 @@ def analyze_business_from_crawl(
     model_gpt: str,
     confirmed_industry: str = "",
 ) -> BusinessInfo:
-    import re, json
-    from urllib.parse import urlparse
-
     crawl_result = state.crawl_result
-    domain = state.domain
-    search_ctx = state.search_ctx
-    stem = domain.split(".")[0]
+    domain       = state.domain
+    search_ctx   = state.search_ctx
+    stem         = domain.split(".")[0]
+    t0           = time.time()
 
-    t0 = time.time()
-
-    body_len = len(crawl_result.body_text) if crawl_result else 0
+    body_len     = len(crawl_result.body_text) if crawl_result else 0
     data_quality = "rich" if body_len > 1000 else ("sparse" if body_len > 200 else "empty")
 
     state.log("biz_input", {
@@ -250,9 +229,9 @@ def analyze_business_from_crawl(
         "has_search_ctx": bool(search_ctx),
     })
 
-    prompt = _build_biz_prompt(domain, crawl_result or CrawlResult(url=domain), search_ctx)
-
+    prompt     = _build_biz_prompt(domain, crawl_result or CrawlResult(url=domain), search_ctx)
     result_str = ""
+
     with CaptureError("biz_ai", log_level="warning") as ctx:
         if client_gpt:
             result_str = call_gpt(client_gpt, prompt, system=_BIZ_SYSTEM,
@@ -269,7 +248,7 @@ def analyze_business_from_crawl(
         if m:
             biz_dict = json.loads(m.group())
 
-    # 업종 모호 → retry with 크롤 컨텍스트 명시
+    # 업종 모호 → retry
     if biz_dict:
         industry = biz_dict.get("industry", "")
         is_vague = any(bad in industry.lower() for bad in _BAD_INDUSTRIES)
@@ -280,6 +259,7 @@ def analyze_business_from_crawl(
                 if crawl_result else search_ctx[:1000]
             )
             retry_p = f"""도메인 "{domain}"의 업종을 아래 실제 콘텐츠로 정확히 분류하세요.
+
 {retry_ctx}
 
 키워드가 있으면 분류 기준:
@@ -289,10 +269,13 @@ def analyze_business_from_crawl(
 - 교육 키워드 → "온라인 교육 플랫폼" 류
 
 JSON만 출력: {{"industry": "구체적 업종명"}}"""
+
             with CaptureError("biz_industry_retry", log_level="warning"):
-                r2 = (call_gpt(client_gpt, retry_p, max_tokens=80, model=model_gpt, temperature=0.1)
-                      if client_gpt else
-                      call_gemini(client_gemini, retry_p, max_tokens=80, temperature=0.1))
+                r2 = (
+                    call_gpt(client_gpt, retry_p, max_tokens=80, model=model_gpt, temperature=0.1)
+                    if client_gpt else
+                    call_gemini(client_gemini, retry_p, max_tokens=80, temperature=0.1)
+                )
                 m2 = re.search(r'\{.*\}', r2, re.DOTALL)
                 if m2:
                     ni = json.loads(m2.group()).get("industry", "")
@@ -303,20 +286,20 @@ JSON만 출력: {{"industry": "구체적 업종명"}}"""
     if not biz_dict:
         state.errors.append("biz_parse: JSON 파싱 실패, 폴백 사용")
         biz_dict = {
-            "brand_name": stem.upper(),
-            "industry": f"{stem} 서비스",
-            "industry_category": "기타",
-            "core_product": "서비스",
-            "target_audience": "잠재 고객",
-            "key_services": [],
-            "confidence": "low",
+            "brand_name":       stem.upper(),
+            "industry":         f"{stem} 서비스",
+            "industry_category":"기타",
+            "core_product":     "서비스",
+            "target_audience":  "잠재 고객",
+            "key_services":     [],
+            "confidence":       "low",
         }
 
     biz_dict["crawl_tier"] = crawl_result.tier_used if crawl_result else 0
 
     if confirmed_industry.strip():
-        biz_dict["industry"] = confirmed_industry.strip()
-        biz_dict["confidence"] = "high"
+        biz_dict["industry"]    = confirmed_industry.strip()
+        biz_dict["confidence"]  = "high"
         state.log("biz_user_override", {"industry": confirmed_industry})
 
     biz = BusinessInfo.from_dict(biz_dict)
@@ -324,8 +307,9 @@ JSON만 출력: {{"industry": "구체적 업종명"}}"""
     state.log("biz_output", biz.to_dict())
     return biz
 
+
 # ─────────────────────────────────────────────
-# 질문 생성 with 크롤 컨텍스트 직접 주입
+# 질문 생성 (crawl + biz 모두 참조)
 # ─────────────────────────────────────────────
 
 def generate_questions_from_state(
@@ -334,7 +318,7 @@ def generate_questions_from_state(
     model_gpt: str,
     engine: str = "GPT",
 ) -> list[str]:
-    biz = state.biz_info
+    biz       = state.biz_info
     crawl_res = state.crawl_result
 
     if biz is None:
@@ -343,14 +327,14 @@ def generate_questions_from_state(
 
     t0 = time.time()
 
+    # 핵심 키워드 추출
     site_keywords = ""
     if crawl_res and crawl_res.body_text:
-        body = crawl_res.body_text[:2000]
+        body    = crawl_res.body_text[:2000]
         ko_words = re.findall(r'[가-힣]{2,}', body)
-        from collections import Counter
-        top_ko = [w for w, _ in Counter(ko_words).most_common(10) if len(w) >= 2]
+        top_ko   = [w for w, _ in Counter(ko_words).most_common(10) if len(w) >= 2]
         en_words = re.findall(r'[A-Z][a-zA-Z]{3,}', body)
-        top_en = list(dict.fromkeys(en_words))[:5]
+        top_en   = list(dict.fromkeys(en_words))[:5]
         site_keywords = ", ".join(top_ko[:8] + top_en[:3])
 
     category_hint = _CATEGORY_HINTS.get(
@@ -362,32 +346,41 @@ def generate_questions_from_state(
     prompt = f"""당신은 {biz.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
 
 [분석 대상 — 실제 사이트 분석 결과]
-- 브랜드명: {biz.brand_name} ← 질문에 반드시 이 이름을 자연스럽게 포함
 - 업종: {biz.industry} ({biz.industry_category})
 - 핵심 서비스: {services_str}
 - 주요 타겟: {biz.target_audience}
 - 사이트 실제 키워드: {site_keywords if site_keywords else "(크롤 데이터 없음)"}
 - 크롤 품질: Tier{biz.crawl_tier} / 신뢰도 {biz.confidence}
 
+[핵심 목표]
+{biz.target_audience}가 ChatGPT, Gemini, 네이버 AI 등에게 실제로 물어볼 법한 질문을 만드세요.
+이 질문에 AI가 답할 때 {biz.brand_name} 사이트가 자연스럽게 인용될 수 있어야 합니다.
+
 [질문 방향]
 {category_hint}
 
 [생성 규칙 — 엄격 준수]
-1. "{biz.brand_name}"이 AI 답변에서 인용될 가능성이 가장 높은 질문 유형으로 생성
+1. 브랜드명({biz.brand_name}) 절대 포함 금지 — 실제 사용자는 브랜드를 모르고 검색함
 2. 위 "사이트 실제 키워드"를 질문 소재로 적극 활용 (실제 사이트 서비스 반영)
 3. 구매 결정 5단계(인지→비교→신뢰→가격→전환)를 각각 다룰 것
 4. {biz.industry} 전문 용어·지표·관행 적극 활용
 5. "~는 무엇인가요?", "~를 소개해주세요" 금지
-6. 구체적 수치·비교·상황 포함 필수
+6. 구체적 수치·비교·상황·지역 포함 필수
 
-[품질 기준 — 이 기준을 충족해야 질문으로 인정]
-✅ 브랜드명 포함
-✅ 비교/수치/사례/비용 중 하나 이상 포함
-✅ 실제 구매·도입 맥락에서 나올 법한 질문
+[좋은 예시]
+- "네이버 공식 광고대행사 추천해줘"
+- "중소기업 구글 광고 맡길 대행사 어디가 좋아?"
+- "퍼포먼스 마케팅 잘하는 광고대행사 ROAS 비교"
+
+[품질 기준]
+✅ 브랜드명 없이 업종/서비스 키워드만으로 구성
+✅ 비교/수치/사례/비용/지역 중 하나 이상 포함
+✅ 실제 구매·도입 맥락에서 나올 법한 자연스러운 질문
+❌ 브랜드명, 회사명, 도메인 주소 포함
 ❌ 단순 정보 탐색형 (역사, 소개, 설명 등)
-❌ 도메인 주소 포함
 
-번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
+번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결.
+절대 금지: 마크다운 기호(_arrowRight_, *, **, →, ▶, :emoji:), 이모지, 특수문자 사용 금지. 순수 텍스트만 출력."""
 
     result_str = ""
     with CaptureError("question_gen", log_level="warning") as ctx:
@@ -403,20 +396,27 @@ def generate_questions_from_state(
     if not ctx.ok:
         state.errors.append(f"question_gen: {ctx.error}")
 
+    # 파싱 — Gemini 마크다운 아이콘 완전 제거
     lines = [ln.strip() for ln in result_str.split("\n") if ln.strip()]
     raw_questions = []
     for ln in lines:
-        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
-        clean = re.sub(r'^[-•\*]\s*', '', clean)
-        clean = re.sub(r'^\[.*?\]\s*', '', clean)
-        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean).strip()
-        if len(clean) > 10:
+        clean = ln
+        clean = re.sub(r'_[a-zA-Z]+_', '', clean)             # _arrowRight_, _bold_ 등
+        clean = re.sub(r':[a-z_]+:', '', clean)                # :emoji_name: 형식
+        clean = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', clean) # *bold*, **bold**, ***bold***
+        clean = re.sub(r'^[\d]+[.)]\s*', '', clean)          # 앞머리 번호
+        clean = re.sub(r'^[-•*→▶►•◦‣⁃]\s*', '', clean)       # 앞머리 bullet/화살표 전체
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)           # 앞머리 [태그]
+        clean = re.sub(r'[\u2600-\u27BF]', '', clean)        # 유니코드 특수기호
+        clean = re.sub(r'[\U0001F300-\U0001F9FF]', '', clean) # 이모지
+        clean = re.sub(r'\s{2,}', ' ', clean).strip()         # 연속 공백 정리
+        if len(clean) > 10 and not clean.startswith("참고") and not clean.startswith("주의"):
             if not clean.endswith("?"):
                 clean += "?"
             raw_questions.append(clean)
 
-    # Content Filter 적용
-    filtered = []
+    # Content Filter
+    filtered       = []
     filter_results = []
     for q in raw_questions:
         fr = content_filter(q, biz.brand_name)
@@ -427,14 +427,15 @@ def generate_questions_from_state(
             state.log("question_filtered", {"question": q, "reason": fr["reason"]})
 
     state.log("question_gen", {
-        "raw_count": len(raw_questions),
-        "filtered_count": len(filtered),
-        "filter_results": filter_results,
+        "raw_count":          len(raw_questions),
+        "filtered_count":     len(filtered),
+        "filter_results":     filter_results,
         "site_keywords_used": site_keywords,
     })
 
     questions = filtered[:5]
 
+    # 최소 3개 보장
     if len(questions) < 3:
         for q in raw_questions:
             if q not in questions:
@@ -442,30 +443,32 @@ def generate_questions_from_state(
             if len(questions) >= 5:
                 break
 
+    # 폴백
     if len(questions) < 3:
         is_ad = "광고" in biz.industry or "마케팅" in biz.industry
         state.errors.append("question_gen: 폴백 질문 사용")
         questions = (
             [
-                f"{biz.brand_name}의 퍼포먼스 광고 ROAS가 타 대행사 대비 어떤 수준인가요?",
-                f"{biz.brand_name}에 광고를 맡기기 전 확인할 계약 조건과 대행수수료 구조는?",
-                f"{biz.brand_name}의 업종별 광고 집행 성공 사례와 실제 CPA 달성치는?",
-                f"{biz.brand_name} 광고 직접 운영 대비 ROI 차이가 어느 정도 나나요?",
-                f"{biz.brand_name}과 경쟁 광고대행사를 동시 운영해본 마케터의 평가는?",
+                f"{biz.industry} 추천해줘 ROAS 높은 곳?",
+                f"{biz.industry} 계약 전 확인해야 할 대행수수료 구조는?",
+                f"중소기업 {biz.industry} 맡길 때 업종별 성공 사례 알려줘",
+                f"광고 직접 운영 vs {biz.industry} 위탁 — 비용 차이 비교",
+                f"{biz.industry} 잘하는 곳 어떻게 비교하나요?",
             ] if is_ad else [
-                f"{biz.brand_name}이 {biz.industry}에서 경쟁사 대비 실제로 다른 점은?",
-                f"{biz.target_audience}가 {biz.brand_name} 선택 후 6개월 내 실제 성과는?",
-                f"{biz.brand_name}의 비용 구조가 동종 업계 대비 어떤 수준인가요?",
-                f"{biz.brand_name} 실제 사용자 평가와 주요 불만 사항은?",
-                f"{biz.industry}에서 {biz.brand_name}과 직접 비교되는 대안 서비스는?",
+                f"{biz.industry} 서비스 비교할 때 핵심 기준은?",
+                f"{biz.target_audience} 에게 맞는 {biz.industry} 추천해줘",
+                f"{biz.industry} 비용 구조 업계 평균 어느 정도야?",
+                f"{biz.industry} 실제 사용 후기 어디서 봐?",
+                f"{biz.industry} 선택할 때 가장 중요한 게 뭐야?",
             ]
         )
 
     state.record_time("question_gen", time.time() - t0)
     return questions[:5]
 
+
 # ─────────────────────────────────────────────
-# 메인 파이프라인 실행기
+# 메인 파이프라인
 # ─────────────────────────────────────────────
 
 def run_pipeline(
@@ -476,16 +479,17 @@ def run_pipeline(
     confirmed_brand: str = "",
     q_engine: str = "GPT",
     market_scope: str = "국내 (대한민국)",
-    n_competitors: int = 5,
+    n_competitors: int = 3,  # 고정값 — 항상 3개만 도출
     tracker: Optional[CostTracker] = None,
     use_cache: bool = True,
     debug: bool = False,
     status_callback=None,
 ) -> PipelineState:
+
     from urllib.parse import urlparse
 
     try:
-        p = urlparse(url if url.startswith("http") else "https://" + url)
+        p      = urlparse(url if url.startswith("http") else "https://" + url)
         domain = p.netloc.replace("www.", "")
     except Exception:
         domain = url
@@ -499,17 +503,26 @@ def run_pipeline(
         if debug:
             logger.info(f"[{stage}] {msg}")
 
-    # ──────────────────────────────────────────
-    # Step 1: 크롤링 + 검색 보완 (병렬)
-    # ──────────────────────────────────────────
+    # ── Step 1: 크롤링 + 검색 보완 ──
     _cb("crawl", f"{domain} 크롤링 중 (3-tier fallback)...")
     t0 = time.time()
 
+    cached_crawl = None
     if use_cache:
-        key = cache.make_key("pipeline_crawl", url)
+        key          = cache.make_key("pipeline_crawl", url)
         cached_crawl = cache.get(key)
-        if cached_crawl is not None:  # [FIX] None 명시적 비교
-            state.crawl_result = CrawlResult(**cached_crawl["crawl"])
+        if cached_crawl:
+            cr_data = cached_crawl["crawl"]
+            state.crawl_result = CrawlResult(
+                url          = cr_data.get("url", url),
+                title        = cr_data.get("title", ""),
+                description  = cr_data.get("description", ""),
+                body_text    = cr_data.get("body_text", ""),
+                html_snippet = cr_data.get("html_snippet", ""),  # BUG FIX: 누락 필드 기본값
+                tier_used    = cr_data.get("tier_used", 0),
+                ok           = cr_data.get("ok", False),
+                error        = cr_data.get("error", ""),
+            )
             state.search_ctx = cached_crawl.get("search_ctx", "")
             _cb("crawl", f"캐시 히트 (Tier{state.crawl_result.tier_used})")
             state.record_time("crawl", 0)
@@ -527,7 +540,7 @@ def run_pipeline(
             return ctx or ""
 
         with cf.ThreadPoolExecutor(max_workers=2) as ex:
-            f_crawl = ex.submit(_do_crawl)
+            f_crawl  = ex.submit(_do_crawl)
             f_search = ex.submit(_do_search)
 
             with CaptureError("crawl_future", log_level="warning") as ctx:
@@ -542,92 +555,87 @@ def run_pipeline(
         if use_cache and state.crawl_result.ok:
             cache.set(cache.make_key("pipeline_crawl", url), {
                 "crawl": {
-                    "url": state.crawl_result.url,
-                    "title": state.crawl_result.title,
-                    "description": state.crawl_result.description,
-                    "body_text": state.crawl_result.body_text,
-                    "html_snippet": state.crawl_result.html_snippet,
-                    "tier_used": state.crawl_result.tier_used,
-                    "ok": state.crawl_result.ok,
-                    "error": state.crawl_result.error,
+                    "url":          state.crawl_result.url,
+                    "title":        state.crawl_result.title,
+                    "description":  state.crawl_result.description,
+                    "body_text":    state.crawl_result.body_text,
+                    "html_snippet": getattr(state.crawl_result, "html_snippet", ""),
+                    "tier_used":    state.crawl_result.tier_used,
+                    "ok":           state.crawl_result.ok,
+                    "error":        state.crawl_result.error,
                 },
                 "search_ctx": state.search_ctx,
             }, namespace="crawl")
 
     state.record_time("crawl", time.time() - t0)
     state.log("crawl", {
-        "tier": state.crawl_result.tier_used,
-        "ok": state.crawl_result.ok,
-        "body_len": len(state.crawl_result.body_text),
-        "title": state.crawl_result.title[:80],
+        "tier":           state.crawl_result.tier_used,
+        "ok":             state.crawl_result.ok,
+        "body_len":       len(state.crawl_result.body_text),
+        "title":          state.crawl_result.title[:80],
         "search_ctx_len": len(state.search_ctx),
     })
     _cb("crawl", f"완료 (Tier{state.crawl_result.tier_used}, 본문 {len(state.crawl_result.body_text)}자)")
 
-    # ──────────────────────────────────────────
-    # Step 2: Biz 분석 + 경쟁사 도출 (병렬)
-    # ──────────────────────────────────────────
+    # ── Step 2: Biz 분석 ──
     _cb("biz", "업종 AI 분석 중...")
     t0 = time.time()
 
     biz_cache_key = cache.make_key("pipeline_biz", url, confirmed_industry)
     if use_cache:
         cached_biz = cache.get(biz_cache_key)
-        if cached_biz is not None:  # [FIX] None 명시적 비교
+        if cached_biz:
             state.biz_info = BusinessInfo.from_dict(cached_biz)
             _cb("biz", f"캐시 히트: {state.biz_info.brand_name} | {state.biz_info.industry}")
 
-    def _do_biz():
-        return analyze_business_from_crawl(
+    if state.biz_info is None:
+        state.biz_info = analyze_business_from_crawl(
             client_gpt, client_gemini, state,
             model_gpt=model_gpt,
             confirmed_industry=confirmed_industry,
         )
-
-    def _do_competitors():
-        return discover_competitors(
-            client_gpt, client_gemini,
-            state.biz_info, url,
-            market_scope=market_scope,
-            model_gpt=model_gpt,
-            n_competitors=n_competitors,
-            use_cache=use_cache,
-        )
-
-    if state.biz_info is None:
-        state.biz_info = _do_biz()
         if use_cache:
             cache.set(biz_cache_key, state.biz_info.to_dict(), namespace="biz")
 
-    state.record_time("biz", time.time() - t0)
+    state.record_time("biz_analysis", time.time() - t0)
 
+    # 브랜드명 사용자 오버라이드
     if confirmed_brand.strip() and state.biz_info:
         state.biz_info.brand_name = confirmed_brand.strip()
         state.log("brand_override", {"brand_name": confirmed_brand.strip()})
 
     _cb("biz", f"완료: {state.biz_info.brand_name} | {state.biz_info.industry} | {state.biz_info.confidence}")
 
-    # 경쟁사 병렬 실행 (biz + brand 확정 후 submit)
+    # ── Step 3: 경쟁사 + 질문 병렬 실행 ──
+    # BUG FIX: biz_info 확정 후 executor를 try/finally로 감싸서 누수 방지
     _cb("competitors", f"[{market_scope}] 경쟁사 분석 중...")
+    _cb("questions",   "크롤 데이터 기반 타겟 질문 도출 중...")
 
-    # [FIX] ThreadPoolExecutor를 try/finally로 감싸서 예외 발생 시에도 shutdown() 보장
-    executor = cf.ThreadPoolExecutor(max_workers=2)
+    t0         = time.time()
     comp_future = None
+    executor    = cf.ThreadPoolExecutor(max_workers=2)
+
     try:
+        # BUG FIX: biz_info가 확정된 상태에서 submit
+        def _do_competitors():
+            return discover_competitors(
+                client_gpt, client_gemini,
+                state.biz_info, url,
+                market_scope=market_scope,
+                model_gpt=model_gpt,
+                n_competitors=n_competitors,
+                use_cache=use_cache,
+            )
+
         comp_future = executor.submit(_do_competitors)
 
-        # ──────────────────────────────────────────
-        # Step 3: 질문 생성 (crawl + biz 모두 활용)
-        # ──────────────────────────────────────────
-        _cb("questions", "크롤 데이터 기반 타겟 질문 도출 중...")
-        t0 = time.time()
-
+        # 질문 생성 (메인 스레드에서 직렬 실행 — biz + crawl 공유 state 사용)
         q_cache_key = cache.make_key(
             "pipeline_questions", url, state.biz_info.industry, q_engine
         )
         if use_cache:
             cached_q = cache.get(q_cache_key)
-            if cached_q is not None:  # [FIX] None 명시적 비교
+            if cached_q:
                 state.questions = cached_q
                 _cb("questions", f"캐시 히트: {len(state.questions)}개")
 
@@ -643,27 +651,26 @@ def run_pipeline(
         _cb("questions", f"완료: {len(state.questions)}개 질문 (content filter 통과)")
 
         # 경쟁사 결과 수집
-        with CaptureError("comp_collect", log_level="warning") as ctx:
-            state.competitors = comp_future.result(timeout=60)
-        if not ctx.ok:
-            state.errors.append(f"competitors: {ctx.error}")
-            state.competitors = []
+        # BUG FIX: comp_future None 체크 추가
+        if comp_future is not None:
+            with CaptureError("comp_collect", log_level="warning") as ctx:
+                state.competitors = comp_future.result(timeout=60)
+            if not ctx.ok:
+                state.errors.append(f"competitors: {ctx.error}")
+                state.competitors = []
+        _cb("competitors", f"완료: {len(state.competitors)}개")
 
     finally:
-        # [FIX] 항상 executor shutdown 보장 (예외 발생 여부 무관)
+        # BUG FIX: 예외 발생 시에도 반드시 shutdown
         executor.shutdown(wait=False)
 
-    _cb("competitors", f"완료: {len(state.competitors)}개")
-
-    # ──────────────────────────────────────────
-    # Step 4: Citation Spot-Check (첫 번째 질문으로)
-    # ──────────────────────────────────────────
+    # ── Step 4: Citation Spot-Check ──
     if state.questions and (client_gpt or client_gemini):
         _cb("spot_check", "Citation 정확도 spot-check 중 (5회 샘플)...")
         t0 = time.time()
 
         brand_variants = build_brand_variants(url, state.biz_info.to_dict())
-        first_q = state.questions[0]
+        first_q        = state.questions[0]
 
         spot = citation_spot_check(
             client_gpt, client_gemini,
@@ -681,12 +688,12 @@ def run_pipeline(
 
     return state
 
+
 # ─────────────────────────────────────────────
-# Debug 패널 렌더링 (app.py에서 호출)
+# Debug 패널 렌더링
 # ─────────────────────────────────────────────
 
 def render_debug_panel(state: PipelineState):
-    """Streamlit debug 패널 — 각 단계 입출력 표시"""
     import streamlit as st
     import pandas as pd
 
@@ -698,25 +705,25 @@ def render_debug_panel(state: PipelineState):
         for i, (k, v) in enumerate(state.timing.items()):
             cols[i].metric(k, f"{v}s")
 
+    # BUG FIX: 마크다운 이스케이프 제거 (st.error는 마크다운 미지원)
     if state.errors:
-        st.error("**파이프라인 에러:**\n" + "\n".join(f"- {e}" for e in state.errors))
+        st.error("파이프라인 에러:\n" + "\n".join(f"• {e}" for e in state.errors))
 
     with st.expander("🌐 Crawl 결과", expanded=False):
         if state.crawl_result:
             cr = state.crawl_result
             st.json({
-                "tier": cr.tier_used,
-                "ok": cr.ok,
-                "title": cr.title,
-                "description": cr.description[:200],
-                "body_len": len(cr.body_text),
+                "tier":         cr.tier_used,
+                "ok":           cr.ok,
+                "title":        cr.title,
+                "description":  cr.description[:200],
+                "body_len":     len(cr.body_text),
                 "body_preview": cr.body_text[:500],
             })
         else:
             st.warning("크롤 결과 없음")
-
-    if state.search_ctx:
-        st.text_area("검색 보완 컨텍스트", value=state.search_ctx[:1000], height=150)
+        if state.search_ctx:
+            st.text_area("검색 보완 컨텍스트", value=state.search_ctx[:1000], height=150)
 
     with st.expander("🏢 Biz 분석 결과", expanded=False):
         if state.biz_info:
@@ -750,18 +757,17 @@ def render_debug_panel(state: PipelineState):
             sp = state.spot_check
             c1, c2, c3 = st.columns(3)
             c1.metric("초기 점유율 추정", f"{sp['hit_rate']}%")
-            c2.metric("FP 리스크", sp["false_positive_risk"])
-            c3.metric("샘플 수", sp["n_samples"])
+            c2.metric("FP 리스크",        sp["false_positive_risk"])
+            c3.metric("샘플 수",          sp["n_samples"])
 
             if sp.get("suspect_variants"):
                 st.warning(f"⚠️ 오탐 의심 변형: {sp['suspect_variants']}")
             if sp.get("refined_variants"):
-                st.info(f"✅ 정제된 변형 ({len(sp['refined_variants'])}개): "
-                        f"{sp['refined_variants']}")
+                st.info(f"✅ 정제된 변형 ({len(sp['refined_variants'])}개): {sp['refined_variants']}")
 
             for i, s in enumerate(sp.get("sample_responses", [])[:3]):
                 color = "✅" if s["cited"] else "❌"
-                conf = s.get("confidence", 0)
+                conf  = s.get("confidence", 0)
                 st.markdown(
                     f"**샘플 {i+1}** {color} "
                     f"confidence={conf:.2f} "
@@ -774,7 +780,7 @@ def render_debug_panel(state: PipelineState):
     with st.expander("📋 전체 파이프라인 로그", expanded=False):
         for entry in state.debug_log:
             stage = entry.get("stage", "?")
-            ts = entry.get("ts", 0)
-            rest = {k: v for k, v in entry.items() if k not in ("stage", "ts")}
+            ts    = entry.get("ts", 0)
+            rest  = {k: v for k, v in entry.items() if k not in ("stage", "ts")}
             st.markdown(f"**[{stage}]** `{ts:.2f}`")
             st.json(rest)
