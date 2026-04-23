@@ -740,7 +740,7 @@ with st.sidebar:
     sim_count    = st.slider("시뮬레이션 횟수", 10, 100, 50, 10,
                              help="적응형 조기 종료로 실제 비용은 설정값보다 낮을 수 있습니다")
     market_scope = st.radio("경쟁사 범위", ["국내 (대한민국)", "글로벌"], horizontal=True)
-    n_competitors= st.slider("경쟁사 수", 3, 10, 5)
+    n_competitors = 3  # 경쟁사 수 3개 고정
 
     st.markdown("---")
 
