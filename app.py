@@ -52,7 +52,7 @@ from urllib.parse import urlparse
 # Step 2: core 모듈 import — 실패 시 UI에 진단 정보 표시
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 try:
-    from core.cache import TTLCache, get_cache
+    from core.cache import get_cache          # TTLCache는 직접 import 하지 않음
     from core.logger import get_logger, CaptureError
     from core.citation import build_brand_variants, wilson_ci
     from core.ai_client import (
@@ -113,12 +113,14 @@ def _init_session():
 
 _init_session()
 
-# 캐시 복원
+# 캐시 복원 — TTLCache 직접 import 없이 인스턴스에서 클래스 참조
 _cache = get_cache()
 if st.session_state["cache_data"]:
-    _cache._store.update(
-        TTLCache.from_serializable(st.session_state["cache_data"])._store
-    )
+    try:
+        _restored = type(_cache).from_serializable(st.session_state["cache_data"])
+        _cache._store.update(_restored._store)
+    except Exception:
+        st.session_state["cache_data"] = {}
 
 _dark = st.session_state["dark_mode"]
 
