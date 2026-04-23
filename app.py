@@ -320,8 +320,23 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] svg {{
     margin-bottom:28px;
     box-shadow:{_shadow};
 }}
-.main-header h1 {{ color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; }}
-.main-header p {{ color:rgba(255,255,255,.82) !important; font-size:1rem !important; margin:8px 0 0 !important; }}
+.stApp .main-header h1,
+.stApp .main-header h1 *,
+div.main-header h1 {{
+    color:white !important;
+    font-size:2rem !important;
+    font-weight:800 !important;
+    margin:0 !important;
+    -webkit-text-fill-color:white !important;
+}}
+.stApp .main-header p,
+.stApp .main-header p *,
+div.main-header p {{
+    color:rgba(255,255,255,.85) !important;
+    font-size:1rem !important;
+    margin:8px 0 0 !important;
+    -webkit-text-fill-color:rgba(255,255,255,.85) !important;
+}}
 
 /* ── 결과/메트릭 카드 ── */
 .metric-card, .result-card {{
