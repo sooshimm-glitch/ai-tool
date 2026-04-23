@@ -399,11 +399,15 @@ def generate_questions_from_state(
     lines = [ln.strip() for ln in result_str.split("\n") if ln.strip()]
     raw_questions = []
     for ln in lines:
-        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
-        clean = re.sub(r'^[-•*]\s*', '', clean)
-        clean = re.sub(r'^\[.*?\]\s*', '', clean)
-        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean).strip()
-        if len(clean) > 10:
+        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)           # 앞머리 번호
+        clean = re.sub(r'^[-•*→▶]\s*', '', clean)           # 앞머리 bullet/화살표
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)           # 앞머리 [태그]
+        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean)     # **bold**
+        clean = re.sub(r'_arrow\w+_', '', clean)              # _arrowRight_ 등 마크다운 아이콘
+        clean = re.sub(r':[a-z_]+:', '', clean)                # :emoji_name: 형식
+        clean = re.sub(r'\s{2,}', ' ', clean).strip()         # 연속 공백 정리
+        # 질문이 아닌 라인 제거 (너무 짧거나 메타 텍스트)
+        if len(clean) > 10 and not clean.startswith("참고") and not clean.startswith("주의"):
             if not clean.endswith("?"):
                 clean += "?"
             raw_questions.append(clean)
