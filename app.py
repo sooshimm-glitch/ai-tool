@@ -1,1368 +1,786 @@
 """
-AI Citation Analyzer — 리팩토링 메인 앱
+pipeline.py — Crawler → Biz → Question 통합 오케스트레이터
 
 수정 사항 (버그픽스):
-1. 다크/라이트 모드 글씨색 전환 오류 수정 — CSS 변수 대신 직접 색상값 주입
-2. 위젯 사라짐 버그 수정 — session_state 덮어쓰기 로직 개선
-3. import re 위치 파일 상단으로 이동
-4. var(--text) 끊김 문제 → 인라인 스타일에서 {_text} 직접 사용으로 통일
-5. st.metric 델타 아이콘 숨김 처리 개선
+1. ThreadPoolExecutor 누수 — try/finally로 항상 shutdown 보장
+2. comp_future None 체크 추가
+3. 캐시 히트 시 _do_competitors()가 biz_info 없이 실행되는 버그 수정
+4. CrawlResult 역직렬화 누락 필드 방어 처리 (get + 기본값)
+5. render_debug_panel 마크다운 이스케이프 수정
+6. question 캐시 히트 후 재진입 방어
 """
 
-import streamlit as st
-import datetime
-import random
+from __future__ import annotations
+
 import re
+import json
 import time
-import pandas as pd
-import plotly.graph_objects as go
-from urllib.parse import urlparse
+import concurrent.futures as cf
+from dataclasses import dataclass, field
+from typing import Optional
+from collections import Counter
 
-# ── 코어 모듈 임포트 ──
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
-
-from core.cache import TTLCache, get_cache
 from core.logger import get_logger, CaptureError
-from core.citation import build_brand_variants, wilson_ci
-from core.crawler import crawl, crawl_search
-from core.ai_client import (
-    call_gpt, call_gemini,
-    run_simulation, run_all_simulations,
-    CostTracker, SimResult,
+from core.cache import get_cache
+from core.crawler import crawl, crawl_search, CrawlResult
+from core.citation import (
+    build_brand_variants, detect_citation, CitationResult, wilson_ci
 )
+from core.ai_client import call_gpt, call_gemini, CostTracker
 from core.biz_analysis import (
-    analyze_business, discover_competitors,
-    generate_target_questions, run_strategy_analysis,
     BusinessInfo, Competitor,
+    _CATEGORY_HINTS, _QUESTION_SYSTEM,
+    discover_competitors,
 )
-from core.pipeline import (
-    run_pipeline, PipelineState,
-    content_filter, citation_spot_check,
-    render_debug_panel,
-)
+from core.industry_classifier import _BIZ_SYSTEM, _build_classify_prompt
+from core.schemas import _BAD_INDUSTRIES
 
-logger = get_logger("app")
+# 호환성 래퍼
+def _build_biz_prompt(domain: str, crawl_result, search_ctx: str) -> str:
+    clean_text = (crawl_result.body_text if crawl_result and crawl_result.body_text else "")
+    return _build_classify_prompt(domain, clean_text, search_ctx, "")
 
-# ─────────────────────────────────────────────
-# 페이지 설정
-# ─────────────────────────────────────────────
+logger = get_logger("pipeline")
 
-st.set_page_config(
-    page_title="AI Citation Analyzer",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ─────────────────────────────────────────────
-# 세션 상태 초기화
+# 파이프라인 상태
 # ─────────────────────────────────────────────
 
-if "dark_mode" not in st.session_state: st.session_state["dark_mode"] = False
-if "cache_data" not in st.session_state: st.session_state["cache_data"] = {}
-if "cost_tracker" not in st.session_state: st.session_state["cost_tracker"] = CostTracker()
-if "industry_display" not in st.session_state: st.session_state["industry_display"] = ""
-if "brand_display" not in st.session_state: st.session_state["brand_display"] = ""
+@dataclass
+class PipelineState:
+    url: str
+    domain: str
+    crawl_result: Optional[CrawlResult] = None
+    search_ctx: str = ""
+    biz_info: Optional[BusinessInfo] = None
+    competitors: list[Competitor] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+    spot_check: dict = field(default_factory=dict)
+    debug_log: list[dict] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    timing: dict[str, float] = field(default_factory=dict)
 
-# 캐시 복원
-_cache = get_cache()
-if st.session_state["cache_data"]:
-    _cache._store.update(
-        TTLCache.from_serializable(st.session_state["cache_data"])._store
+    def log(self, stage: str, data: dict):
+        self.debug_log.append({"stage": stage, "ts": time.time(), **data})
+
+    def record_time(self, stage: str, elapsed: float):
+        self.timing[stage] = round(elapsed, 2)
+
+
+# ─────────────────────────────────────────────
+# Content Filter
+# ─────────────────────────────────────────────
+
+_WEAK_PATTERNS = [
+    r"(?:는|이|가|을|를)\s*무엇인가요",
+    r"소개해\s*주세요",
+    r"설명해\s*주세요",
+    r"어디\s*(?:있|위치)",
+    r"역사.*어떻게",
+    r"what\s+is\b",
+    r"tell\s+me\s+about",
+    r"introduce\b",
+]
+
+_STRONG_PATTERNS = [
+    r"\d+\s*%",
+    r"(?:비교|대비|vs\.?|versus)",
+    r"(?:ROAS|CPA|CTR|ROI|CPM|CPV)",
+    r"(?:비용|수수료|가격|요금|단가)",
+    r"(?:사례|레퍼런스|후기|리뷰)",
+    r"(?:경쟁사|대안|차이점|장단점)",
+    r"(?:how\s+much|compare|versus|case\s+study|pricing)",
+]
+
+def content_filter(question: str, brand_name: str) -> dict:
+    score = 50
+    flags = []
+
+    for pat in _WEAK_PATTERNS:
+        if re.search(pat, question, re.IGNORECASE):
+            score -= 20
+            flags.append(f"weak_pattern: {pat}")
+            break
+
+    for pat in _STRONG_PATTERNS:
+        if re.search(pat, question, re.IGNORECASE):
+            score += 15
+            flags.append(f"strong_pattern: {pat}")
+
+    if brand_name and brand_name.lower() in question.lower():
+        # 브랜드명 직접 포함 시 감점 — 실제 사용자는 브랜드 모르고 검색
+        score -= 15
+        flags.append("brand_direct_included")
+    else:
+        # 브랜드명 없는 게 올바른 방향 — 업종/서비스 기반 질문
+        score += 10
+        flags.append("brand_not_included_good")
+
+    if len(question) < 20:
+        score -= 20
+        flags.append("too_short")
+    elif len(question) > 150:
+        score -= 5
+        flags.append("too_long")
+
+    if not question.strip().endswith("?"):
+        score -= 10
+        flags.append("no_question_mark")
+
+    score = max(0, min(100, score))
+    passed = score >= 40
+    reason = "pass" if passed else f"low_score({score}): " + ", ".join(flags[:2])
+    return {"score": score, "pass": passed, "reason": reason, "flags": flags}
+
+
+# ─────────────────────────────────────────────
+# Citation Spot-Check
+# ─────────────────────────────────────────────
+
+def citation_spot_check(
+    client_gpt, client_gemini,
+    brand_variants: list[str],
+    question: str,
+    model_gpt: str,
+    n_samples: int = 5,
+    tracker: Optional[CostTracker] = None,
+) -> dict:
+    prompt = f"질문: {question}\n\n답변:"
+    samples = []
+    hits = 0
+
+    for i in range(n_samples):
+        resp = ""
+        with CaptureError(f"spot_gpt_{i}", log_level="debug"):
+            if client_gpt:
+                resp = call_gpt(client_gpt, prompt, max_tokens=200,
+                                model=model_gpt, temperature=0.6, tracker=tracker)
+            elif client_gemini:
+                resp = call_gemini(client_gemini, prompt, max_tokens=200,
+                                   temperature=0.6, tracker=tracker)
+        if not resp:
+            continue
+
+        result: CitationResult = detect_citation(resp, brand_variants)
+        samples.append({
+            "response": resp[:300],
+            "cited": result.cited,
+            "confidence": result.confidence,
+            "pattern_type": result.matches[0].pattern_type if result.matches else None,
+            "is_negative": result.matches[0].is_negative if result.matches else False,
+        })
+        if result.cited:
+            hits += 1
+
+    hit_rate = hits / max(len(samples), 1) * 100
+
+    low_conf_hits = sum(
+        1 for s in samples
+        if s["cited"] and s.get("confidence", 0) < 0.45
     )
+    fp_ratio = low_conf_hits / max(hits, 1) if hits > 0 else 0
 
-_dark = st.session_state["dark_mode"]
+    if fp_ratio > 0.5:
+        fp_risk = "high"
+    elif fp_ratio > 0.2:
+        fp_risk = "medium"
+    else:
+        fp_risk = "low"
 
-# ─────────────────────────────────────────────
-# 테마 변수 — 다크/라이트 완전 분리
-# ─────────────────────────────────────────────
+    suspect  = [v for v in brand_variants if len(v) <= 3 or
+                v.lower() in {"app", "net", "web", "the", "inc", "co"}]
+    refined  = [v for v in brand_variants if v not in suspect] or brand_variants
 
-if _dark:
-    _bg        = "#0F0F0F"
-    _bg2       = "#1A1A1A"
-    _card      = "#1E1E1E"
-    _border    = "#333333"
-    _text      = "#F0F0F0"
-    _text_muted= "#999999"
-    _primary   = "#E0E0E0"
-    _shadow    = "0 4px 24px rgba(0,0,0,.5)"
-    _header_gr = "linear-gradient(135deg,#1A1A1A,#2A2A2A,#3A3A3A)"
-    _sidebar_gr= "linear-gradient(180deg,#0F0F0F,#1A1A1A,#222222)"
-    _metric_bg = "#252525"
-    _input_bg  = "rgba(255,255,255,.07)"
-    _btn_gr    = "linear-gradient(135deg,#333,#555)"
-    _tab_bg    = "#1E1E1E"
-    _tab_sel   = "#333333"
-    _tab_txt   = "#F0F0F0"
-    _progress  = "linear-gradient(90deg,#555,#888)"
-    _plot_bg   = "rgba(30,30,30,.9)"
-    _plot_paper= "#1E1E1E"
-    _plot_font = "#F0F0F0"
-    _plot_grid = "#333"
-else:
-    _bg        = "#F5F5F5"
-    _bg2       = "#EEEEEE"
-    _card      = "#FFFFFF"
-    _border    = "#DDDDDD"
-    _text      = "#111111"
-    _text_muted= "#666666"
-    _primary   = "#111111"
-    _shadow    = "0 4px 24px rgba(0,0,0,.08)"
-    _header_gr = "linear-gradient(135deg,#111,#333,#555)"
-    _sidebar_gr= "linear-gradient(180deg,#111,#222,#333)"
-    _metric_bg = "#FFFFFF"
-    _input_bg  = "#FFFFFF"
-    _btn_gr    = "linear-gradient(135deg,#111,#444)"
-    _tab_bg    = "#FFFFFF"
-    _tab_sel   = "#111111"
-    _tab_txt   = "#FFFFFF"
-    _progress  = "linear-gradient(90deg,#111,#555)"
-    _plot_bg   = "rgba(245,245,245,.8)"
-    _plot_paper= "#FFFFFF"
-    _plot_font = "#111111"
-    _plot_grid = "#DDDDDD"
-
-# ─────────────────────────────────────────────
-# 글로벌 CSS — CSS 변수 대신 직접 색상값 주입
-# (Streamlit shadow DOM에서 var() 상속이 끊기는 문제 해결)
-# ─────────────────────────────────────────────
-
-st.markdown(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
-
-/* ── 전체 기반 ── */
-html, body {{ background-color:{_bg} !important; color:{_text} !important; }}
-.stApp, .stApp > * {{ background:{_bg} !important; }}
-.main .block-container {{ background:{_bg} !important; }}
-
-/* ── 폰트 & 기본 글자색 ── */
-*, *::before, *::after {{ font-family:'Plus Jakarta Sans',sans-serif !important; }}
-
-/* Streamlit 내부 전체 텍스트 색상 강제 적용 */
-.stApp p, .stApp span, .stApp div,
-.stApp label, .stApp small, .stApp strong,
-.stMarkdown, .stMarkdown p, .stMarkdown li,
-.stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
-.stMarkdown h4, .stMarkdown h5, .stMarkdown h6,
-[data-testid="stText"],
-[data-testid="stMarkdownContainer"],
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li {{
-    color:{_text} !important;
-}}
-
-/* ── 메트릭 컴포넌트 ── */
-div[data-testid="metric-container"] {{
-    background:{_metric_bg} !important;
-    border-radius:14px !important;
-    padding:18px !important;
-    border:1px solid {_border} !important;
-    box-shadow:{_shadow} !important;
-}}
-div[data-testid="metric-container"] label,
-div[data-testid="metric-container"] [data-testid="stMetricLabel"],
-div[data-testid="metric-container"] [data-testid="stMetricLabel"] p,
-div[data-testid="metric-container"] [data-testid="stMetricLabel"] span {{
-    color:{_text_muted} !important;
-    font-size:.8rem !important;
-    font-weight:600 !important;
-}}
-div[data-testid="metric-container"] [data-testid="stMetricValue"],
-div[data-testid="metric-container"] [data-testid="stMetricValue"] * {{
-    color:{_text} !important;
-    font-size:1.6rem !important;
-    font-weight:800 !important;
-}}
-div[data-testid="metric-container"] [data-testid="stMetricDelta"],
-div[data-testid="metric-container"] [data-testid="stMetricDelta"] * {{
-    color:{_text_muted} !important;
-    font-size:.78rem !important;
-    background:transparent !important;
-}}
-div[data-testid="metric-container"] [data-testid="stMetricDelta"] svg {{
-    display:none !important;
-}}
-
-/* ── 입력창 레이블 ── */
-.stTextInput label, .stTextArea label,
-.stSelectbox label, .stSlider label,
-.stRadio label, .stCheckbox label,
-[data-testid="stWidgetLabel"],
-[data-testid="stWidgetLabel"] p {{
-    color:{_text} !important;
-    font-weight:600 !important;
-}}
-
-/* 입력 필드 자체 */
-.stTextInput>div>div>input,
-.stTextArea>div>div>textarea {{
-    border-radius:12px !important;
-    border:1.5px solid {_border} !important;
-    background:{_input_bg} !important;
-    color:{_text} !important;
-    font-size:.9rem !important;
-}}
-.stTextInput>div>div>input::placeholder,
-.stTextArea>div>div>textarea::placeholder {{
-    color:{_text_muted} !important;
-}}
-
-/* ── 셀렉트박스 ── */
-.stSelectbox>div>div,
-.stSelectbox [data-baseweb="select"] > div {{
-    background:{_input_bg} !important;
-    border:1.5px solid {_border} !important;
-    border-radius:12px !important;
-    color:{_text} !important;
-}}
-.stSelectbox [data-baseweb="select"] span {{
-    color:{_text} !important;
-}}
-[data-baseweb="popover"] [data-baseweb="menu"],
-[data-baseweb="popover"] li {{
-    background:{_card} !important;
-    color:{_text} !important;
-}}
-
-/* ── 슬라이더 ── */
-.stSlider [data-testid="stTickBar"] span,
-.stSlider p {{ color:{_text} !important; }}
-
-/* ── 라디오 버튼 ── */
-.stRadio > div > label > div > p {{ color:{_text} !important; }}
-.stRadio [data-testid="stMarkdownContainer"] p {{ color:{_text} !important; }}
-
-/* ── 탭 ── */
-.stTabs [data-baseweb="tab-list"] {{
-    background:{_tab_bg} !important;
-    border-radius:14px !important;
-    padding:6px !important;
-    border:1px solid {_border} !important;
-}}
-.stTabs [data-baseweb="tab"] {{
-    border-radius:10px !important;
-    font-weight:600 !important;
-    font-size:.9rem !important;
-    color:{_text_muted} !important;
-    -webkit-text-fill-color:{_text_muted} !important;
-    padding:10px 22px !important;
-    background:transparent !important;
-}}
-.stTabs [aria-selected="true"] {{
-    background:{_tab_sel} !important;
-    color:{_tab_txt} !important;
-    -webkit-text-fill-color:{_tab_txt} !important;
-    box-shadow:0 4px 12px rgba(0,0,0,.3) !important;
-}}
-.stTabs [data-baseweb="tab"] p,
-.stTabs [data-baseweb="tab"] span {{
-    color:inherit !important;
-    -webkit-text-fill-color:inherit !important;
-}}
-
-/* ── 버튼 ── */
-.stButton>button {{
-    background:{_btn_gr} !important;
-    color:white !important;
-    border:none !important;
-    border-radius:12px !important;
-    font-weight:700 !important;
-    padding:12px 28px !important;
-    transition:all .2s !important;
-}}
-.stButton>button:hover {{ transform:translateY(-2px) !important; opacity:.92 !important; }}
-.stButton>button p {{ color:white !important; }}
-
-/* ── 프로그레스 바 ── */
-.stProgress>div>div>div {{
-    background:{_progress} !important;
-    border-radius:8px !important;
-}}
-
-/* ── 사이드바 — 다크 고정 ── */
-[data-testid="stSidebar"] {{ background:{_sidebar_gr} !important; }}
-[data-testid="stSidebar"] *:not(.stButton>button) {{ color:white !important; }}
-[data-testid="stSidebar"] .stTextInput>div>div>input {{
-    background:rgba(255,255,255,.12) !important;
-    border:1px solid rgba(255,255,255,.25) !important;
-    color:white !important;
-}}
-[data-testid="stSidebar"] .stSelectbox>div>div {{
-    background:rgba(255,255,255,.1) !important;
-    border:1px solid rgba(255,255,255,.2) !important;
-    color:white !important;
-}}
-[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span {{ color:white !important; }}
-[data-testid="stSidebar"] .stSlider [role="slider"] {{ background:white !important; }}
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span {{ color:white !important; }}
-
-/* ── expander ── */
-.streamlit-expander {{
-    background:{_card} !important;
-    border:1px solid {_border} !important;
-    border-radius:12px !important;
-}}
-.streamlit-expander summary {{ color:{_text} !important; }}
-.streamlit-expander summary p {{ color:{_text} !important; }}
-/* expander 내부 텍스트 */
-.streamlit-expander [data-testid="stMarkdownContainer"] p,
-.streamlit-expander [data-testid="stMarkdownContainer"] span,
-.streamlit-expander p,
-.streamlit-expander span {{ color:{_text} !important; }}
-
-/* ── 데이터프레임 ── */
-[data-testid="stDataFrame"] {{ background:{_card} !important; }}
-[data-testid="stDataFrame"] * {{ color:{_text} !important; background:{_card} !important; }}
-
-/* ── 헤더 카드 ── */
-.main-header {{
-    background:{_header_gr};
-    border-radius:20px;
-    padding:36px 40px;
-    margin-bottom:28px;
-    box-shadow:{_shadow};
-}}
-.stApp .main-header h1,
-.stApp .main-header h1 *,
-div.main-header h1 {{
-    color:white !important;
-    font-size:2rem !important;
-    font-weight:800 !important;
-    margin:0 !important;
-    -webkit-text-fill-color:white !important;
-}}
-.stApp .main-header p,
-.stApp .main-header p *,
-div.main-header p {{
-    color:rgba(255,255,255,.85) !important;
-    font-size:1rem !important;
-    margin:8px 0 0 !important;
-    -webkit-text-fill-color:rgba(255,255,255,.85) !important;
-}}
-
-/* ── 결과/메트릭 카드 ── */
-.metric-card, .result-card {{
-    background:{_card} !important;
-    border-radius:16px;
-    padding:22px 24px;
-    border:1px solid {_border};
-    box-shadow:{_shadow};
-}}
-.result-card h4 {{ color:{_text} !important; }}
-.result-card p  {{ color:{_text} !important; }}
-
-/* ── 사이드바 로고 ── */
-.sidebar-logo {{ text-align:center; padding:20px 0 24px; border-bottom:1px solid rgba(255,255,255,.15); margin-bottom:20px; }}
-.sidebar-logo .logo-icon {{ font-size:2.5rem; display:block; margin-bottom:8px; }}
-.sidebar-logo h2 {{ color:white !important; font-size:1.1rem !important; font-weight:800 !important; margin:0 !important; }}
-.sidebar-logo p  {{ color:rgba(255,255,255,.6) !important; font-size:.75rem !important; margin:4px 0 0 !important; }}
-
-/* ── 배지 ── */
-.share-badge-high {{ display:inline-block; background:linear-gradient(135deg,#10B981,#059669); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.share-badge-mid  {{ display:inline-block; background:linear-gradient(135deg,#F59E0B,#D97706); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.share-badge-low  {{ display:inline-block; background:linear-gradient(135deg,#EF4444,#DC2626); color:white !important; padding:4px 12px; border-radius:20px; font-size:.85rem; font-weight:700; }}
-.cost-badge  {{ background:rgba(16,185,129,.15); border:1px solid #10B981; color:#059669 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
-.cache-badge {{ background:rgba(99,102,241,.15); border:1px solid #6366F1; color:#4F46E5 !important; padding:4px 10px; border-radius:8px; font-size:.78rem; font-weight:600; }}
-
-/* ── 인라인 카드 ── */
-.inline-card {{
-    background:{_card};
-    border:1px solid {_border};
-    border-radius:10px;
-    padding:11px 16px;
-    margin:5px 0;
-    display:flex;
-    align-items:center;
-    gap:12px;
-}}
-.inline-card .q-text {{
-    font-size:.9rem;
-    color:{_text} !important;
-    font-weight:500;
-    flex:1;
-}}
-
-/* ── 전략 카드 ── */
-.strategy-item {{
-    background:{_card};
-    border-radius:12px;
-    padding:14px 16px;
-    margin:8px 0;
-    border:1px solid {_border};
-}}
-.strategy-item span {{
-    font-size:.85rem;
-    color:{_text} !important;
-    word-break:keep-all;
-    overflow-wrap:break-word;
-    white-space:normal;
-    display:block;
-    line-height:1.6;
-}}
-
-/* ── 블루오션 ── */
-.blue-ocean-item {{
-    background:{_bg2};
-    border-radius:12px;
-    padding:12px 16px;
-    margin:8px 0;
-    border:1px solid {_border};
-    display:flex;
-    align-items:center;
-    gap:10px;
-}}
-.blue-ocean-item .label {{
-    background:linear-gradient(135deg,#111,#444);
-    color:white !important;
-    padding:3px 10px;
-    border-radius:20px;
-    font-size:.75rem;
-    font-weight:700;
-}}
-.blue-ocean-item .kw {{ font-size:.88rem; color:{_text} !important; font-weight:600; }}
-
-/* ── GEO 가이드 ── */
-.geo-guide-item {{
-    background:{_card};
-    border-radius:14px;
-    padding:18px 20px;
-    margin:10px 0;
-    border:1px solid {_border};
-    box-shadow:0 2px 12px rgba(0,0,0,.06);
-}}
-.geo-guide-item .geo-text {{
-    margin:0;
-    font-size:.88rem;
-    color:{_text} !important;
-    line-height:1.8;
-    word-break:keep-all;
-}}
-
-/* ── 기타 ── */
-.hist-empty {{ text-align:center; padding:48px; color:{_text_muted}; }}
-.app-footer  {{ text-align:center; padding:20px; color:{_text_muted}; font-size:.8rem; border-top:1px solid {_border}; }}
-
-/* ── 토글 ── */
-.stToggle label p {{ color:{_text} !important; }}
-
-/* ── 알림/info/warning/success 박스 내부 텍스트 ── */
-[data-testid="stAlert"] p,
-[data-testid="stAlert"] span {{ color:{_text} !important; }}
-
-/* ── caption ── */
-.stCaptionContainer p {{ color:{_text_muted} !important; }}
-</style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────
-# 유틸
-# ─────────────────────────────────────────────
-
-def normalize_url(url: str) -> str:
-    if not url.startswith("http"):
-        url = "https://" + url
-    return url.rstrip("/")
-
-def extract_domain(url: str) -> str:
-    try:
-        p = urlparse(url if url.startswith("http") else "https://" + url)
-        return p.netloc.replace("www.", "")
-    except Exception:
-        return url
-
-def save_cache():
-    """세션 상태에 캐시 직렬화 저장"""
-    with CaptureError("save_cache", log_level="debug"):
-        st.session_state["cache_data"] = _cache.to_serializable()
-
-# ─────────────────────────────────────────────
-# 차트 렌더링 — 다크/라이트 테마 반영
-# ─────────────────────────────────────────────
-
-def render_bar_chart(results: list, questions: list[str], title: str = "AI 엔진별 인용 점유율"):
-    if not results:
-        return
-
-    short_q = [q[:18] + "..." if len(q) > 20 else q for q in questions]
-
-    def _get(r, k, default=None):
-        if isinstance(r, dict):
-            return r.get(k, default)
-        return getattr(r, k, default)
-
-    gpt_rates    = [_get(r, "gpt_rate")    for r in results]
-    gemini_rates = [_get(r, "gemini_rate") for r in results]
-    has_gpt    = any(v is not None for v in gpt_rates)
-    has_gemini = any(v is not None for v in gemini_rates)
-
-    fig = go.Figure()
-
-    if has_gpt:
-        fig.add_trace(go.Bar(
-            name="GPT", x=short_q,
-            y=[v or 0 for v in gpt_rates],
-            marker=dict(
-                color="#444444" if _dark else "#111111",
-                line=dict(color="#666" if _dark else "#000", width=1)
-            ),
-            text=[f"{v:.1f}%" if v is not None else "" for v in gpt_rates],
-            textposition="outside",
-            textfont=dict(color=_plot_font),
-        ))
-
-    if has_gemini:
-        fig.add_trace(go.Bar(
-            name="Gemini", x=short_q,
-            y=[v or 0 for v in gemini_rates],
-            marker=dict(color="#888888"),
-            text=[f"{v:.1f}%" if v is not None else "" for v in gemini_rates],
-            textposition="outside",
-            textfont=dict(color=_plot_font),
-        ))
-
-    all_vals = [v for v in gpt_rates + gemini_rates if v is not None]
-
-    fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(size=16, color=_plot_font, family="Plus Jakarta Sans"),
-            x=0
-        ),
-        barmode="group", bargap=0.25,
-        plot_bgcolor=_plot_bg,
-        paper_bgcolor=_plot_paper,
-        font=dict(family="Plus Jakarta Sans", color=_plot_font),
-        xaxis=dict(tickfont=dict(size=11, color=_plot_font), gridcolor=_plot_grid),
-        yaxis=dict(
-            title="인용 점유율 (%)",
-            ticksuffix="%",
-            gridcolor=_plot_grid,
-            tickfont=dict(color=_plot_font),
-            range=[0, max(max(all_vals, default=0) + 15, 20)]
-        ),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-            font=dict(color=_plot_font)
-        ),
-        margin=dict(t=60, b=40, l=50, r=20),
-        height=380,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def render_strategy(strategy: dict, target_url: str):
-    domain = extract_domain(target_url)
-
-    st.markdown("### 🏆 AI 인용 경쟁 현황 (TOP 10)")
-
-    pos_colors = {
-        "업계1위": "#10B981", "업계 1위": "#10B981",
-        "신흥강자": "#F59E0B", "신흥 강자": "#F59E0B",
-        "틈새전문": "#6366F1", "틈새 전문": "#6366F1",
+    return {
+        "hit_rate": round(hit_rate, 1),
+        "false_positive_risk": fp_risk,
+        "suspect_variants": suspect,
+        "sample_responses": samples,
+        "refined_variants": refined,
+        "n_samples": len(samples),
     }
 
-    for comp in strategy.get("competitors", [])[:10]:
-        r      = comp.get("rank", "?")
-        d      = comp.get("domain", "")
-        b      = comp.get("brand_name", d)
-        reason = comp.get("reason", "")
-        pos    = comp.get("position", "")
-        is_t   = domain.lower() in d.lower()
-
-        # 다크/라이트에 따라 배경색 분리
-        if _dark:
-            bg = "linear-gradient(135deg,#2A2A2A,#333)" if is_t else "#1E1E1E"
-            bd = "#888" if is_t else "#333"
-        else:
-            bg = "linear-gradient(135deg,#EEE,#E0E0E0)" if is_t else "#F8F8F8"
-            bd = "#111" if is_t else "#DDD"
-
-        lbl = " ← 내 사이트" if is_t else ""
-        pc  = pos_colors.get(pos, "#888")
-        pb  = (
-            f'<span style="background:{pc};color:white;padding:2px 8px;border-radius:20px;'
-            f'font-size:.72rem;font-weight:700;margin-left:8px;">{pos}</span>'
-            if pos else ""
-        )
-
-        st.markdown(f"""
-        <div style="display:flex;align-items:center;justify-content:space-between;
-            padding:11px 16px;border-radius:10px;margin:5px 0;
-            background:{bg};border:1.5px solid {bd};">
-            <div style="display:flex;align-items:center;gap:12px;">
-                <div style="width:28px;height:28px;border-radius:8px;
-                    background:{'linear-gradient(135deg,#444,#777)' if _dark and is_t else 'linear-gradient(135deg,#111,#444)' if is_t else '#555' if _dark else '#CCC'};
-                    color:white;font-weight:700;font-size:.8rem;
-                    display:flex;align-items:center;justify-content:center;">{r}</div>
-                <span style="font-weight:{'700' if is_t else '500'};color:{_text};font-size:.9rem;">
-                    {b} <span style="color:{_text_muted};font-size:.78rem;">({d})</span>{lbl}{pb}
-                </span>
-            </div>
-            <span style="color:{_text_muted};font-size:.8rem;">{reason}</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown(
-        f"<hr style='border:none;height:1px;background:linear-gradient(90deg,transparent,{_border},transparent);margin:20px 0;'>",
-        unsafe_allow_html=True
-    )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("### 🔬 인용 실패 원인 진단")
-        _diag_icons = ["❌", "⚡", "🔧"]
-        for i, d in enumerate(strategy.get("diagnoses", [])):
-            col  = ["#111" if not _dark else "#DDD", "#555", "#888"][i % 3]
-            icon = _diag_icons[i % len(_diag_icons)]
-            st.markdown(f"""
-            <div class="strategy-item" style="border-left:4px solid {col};">
-                <span>{icon} {d}</span>
-            </div>""", unsafe_allow_html=True)
-
-    with c2:
-        st.markdown("### 🌊 블루오션 키워드")
-        for kw in strategy.get("keywords", []):
-            st.markdown(f"""
-            <div class="blue-ocean-item">
-                <span class="label">NEW</span>
-                <span class="kw">{kw}</span>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown("### 📋 GEO 최적화 가이드")
-    for i, g in enumerate(strategy.get("geo_guides", [])):
-        g_html = re.sub(r'\*\*(.*?)\*\*', r'<strong style="color:' + _text + r';">\1</strong>', g)
-        g_html = g_html.replace('\n', '<br>')
-        st.markdown(f"""
-        <div class="geo-guide-item">
-            <div style="display:flex;gap:12px;align-items:flex-start;">
-                <div style="min-width:30px;height:30px;border-radius:8px;flex-shrink:0;
-                    background:linear-gradient(135deg,#111,#444);color:white;font-weight:800;
-                    font-size:.85rem;display:flex;align-items:center;justify-content:center;">{i+1}</div>
-                <div class="geo-text">{g_html}</div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
 
 # ─────────────────────────────────────────────
-# 데모 데이터
+# Biz 분석 (CrawlResult 직접 수신)
 # ─────────────────────────────────────────────
 
-_DEMO = {
-    "naver.com": {
-        "questions": ["국내 최고 포털 사이트는?", "한국어 지도 서비스 추천", "블로그 플랫폼 비교", "네이버 쇼핑 vs 쿠팡", "뉴스 검색 사이트"],
-        "results": [
-            {"gpt_rate":58,"gemini_rate":62},{"gpt_rate":44,"gemini_rate":51},
-            {"gpt_rate":22,"gemini_rate":18},{"gpt_rate":31,"gemini_rate":27},
-            {"gpt_rate":39,"gemini_rate":43}
-        ],
-    },
-    "coupang.com": {
-        "questions": ["가장 빠른 배송 쇼핑몰?", "로켓배송 당일 수령 가능?", "쿠팡 vs 네이버쇼핑", "로켓와우 멤버십 혜택", "신선식품 새벽배송"],
-        "results": [
-            {"gpt_rate":71,"gemini_rate":68},{"gpt_rate":65,"gemini_rate":59},
-            {"gpt_rate":38,"gemini_rate":42},{"gpt_rate":52,"gemini_rate":48},
-            {"gpt_rate":29,"gemini_rate":33}
-        ],
-    },
-    "default": {
-        "questions": ["이 서비스의 주요 특징은?", "경쟁 서비스 대비 장점?", "초보자도 사용 가능한가요?", "가격 정책은?", "고객 지원 방법은?"],
-        "results": [
-            {"gpt_rate":7,"gemini_rate":5},{"gpt_rate":4,"gemini_rate":8},
-            {"gpt_rate":12,"gemini_rate":9},{"gpt_rate":3,"gemini_rate":6},
-            {"gpt_rate":15,"gemini_rate":11}
-        ],
-    },
-}
+def analyze_business_from_crawl(
+    client_gpt, client_gemini,
+    state: PipelineState,
+    model_gpt: str,
+    confirmed_industry: str = "",
+) -> BusinessInfo:
+    crawl_result = state.crawl_result
+    domain       = state.domain
+    search_ctx   = state.search_ctx
+    stem         = domain.split(".")[0]
+    t0           = time.time()
 
-_DEMO_STRATEGY = {
-    "competitors": [
-        {"rank":1,"domain":"wikipedia.org","brand_name":"Wikipedia","reason":"중립적 참조 정보","position":"업계1위"},
-        {"rank":2,"domain":"namu.wiki","brand_name":"나무위키","reason":"한국어 위키","position":"신흥강자"},
-        {"rank":3,"domain":"tistory.com","brand_name":"티스토리","reason":"SEO 블로그","position":"틈새전문"},
-        {"rank":4,"domain":"brunch.co.kr","brand_name":"브런치","reason":"전문가 롱폼","position":"틈새전문"},
-        {"rank":5,"domain":"medium.com","brand_name":"Medium","reason":"영문 고품질","position":"신흥강자"},
-    ],
-    "diagnoses": [
-        "구조화 데이터 마크업 부재로 AI 맥락 파악 어려움",
-        "FAQ 섹션 없어 Q&A 기반 인용 기회 손실",
-        "핵심 키워드 밀도 경쟁사 대비 40% 낮음"
-    ],
-    "keywords": [
-        "AI 인용 최적화 전략 2025","GEO 적용 방법","챗봇 검색 브랜드 노출",
-        "LLM 친화적 콘텐츠","AI 답변 출처 선택 조건"
-    ],
-    "geo_guides": [
-        "1. FAQ 블록 추가\n홈페이지에 Q&A 형식 서비스 설명 섹션을 추가하세요.",
-        "2. 구조화 데이터 적용\nJSON-LD로 Organization, FAQPage 스키마를 삽입하세요.",
-        "3. 핵심 가치 제안 최상단 배치\n명확한 정의 문장으로 AI가 권위 출처로 인식하게 하세요.",
-    ],
-}
+    body_len     = len(crawl_result.body_text) if crawl_result else 0
+    data_quality = "rich" if body_len > 1000 else ("sparse" if body_len > 200 else "empty")
 
-def get_demo(url: str) -> dict:
-    domain = extract_domain(url).lower()
-    for k, v in _DEMO.items():
-        if k != "default" and k in domain:
-            return {"scenario": v, "strategy": _DEMO_STRATEGY}
-    return {"scenario": _DEMO["default"], "strategy": _DEMO_STRATEGY}
+    state.log("biz_input", {
+        "domain": domain,
+        "crawl_tier": crawl_result.tier_used if crawl_result else 0,
+        "body_len": body_len,
+        "data_quality": data_quality,
+        "has_search_ctx": bool(search_ctx),
+    })
 
+    prompt     = _build_biz_prompt(domain, crawl_result or CrawlResult(url=domain), search_ctx)
+    result_str = ""
 
-# ─────────────────────────────────────────────
-# 사이드바
-# ─────────────────────────────────────────────
+    with CaptureError("biz_ai", log_level="warning") as ctx:
+        if client_gpt:
+            result_str = call_gpt(client_gpt, prompt, system=_BIZ_SYSTEM,
+                                  max_tokens=500, model=model_gpt, temperature=0.15)
+        elif client_gemini:
+            result_str = call_gemini(client_gemini, prompt, max_tokens=500, temperature=0.15)
 
-with st.sidebar:
-    st.markdown("""
-    <div class="sidebar-logo">
-        <span class="logo-icon">🔍</span>
-        <h2>AI Citation Analyzer</h2>
-        <p>v2.0 — 비용 최적화 · 정밀 탐지</p>
-    </div>""", unsafe_allow_html=True)
+    if not ctx.ok:
+        state.errors.append(f"biz_ai: {ctx.error}")
 
-    if st.button("🌙 다크 모드" if not _dark else "☀️ 라이트 모드",
-                 key="btn_dark", use_container_width=True):
-        st.session_state["dark_mode"] = not _dark
-        st.rerun()
+    biz_dict = {}
+    with CaptureError("biz_parse", log_level="warning"):
+        m = re.search(r'\{.*\}', result_str, re.DOTALL)
+        if m:
+            biz_dict = json.loads(m.group())
 
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # 업종 모호 → retry
+    if biz_dict:
+        industry = biz_dict.get("industry", "")
+        is_vague = any(bad in industry.lower() for bad in _BAD_INDUSTRIES)
+        if is_vague and ((crawl_result and crawl_result.body_text) or search_ctx):
+            retry_ctx = (
+                f"사이트 본문: {crawl_result.body_text[:800]}\n"
+                f"검색 보완: {search_ctx[:500]}"
+                if crawl_result else search_ctx[:1000]
+            )
+            retry_p = f"""도메인 "{domain}"의 업종을 아래 실제 콘텐츠로 정확히 분류하세요.
 
-    openai_key        = st.text_input("OpenAI API Key",  type="password", placeholder="sk-...")
-    gemini_key        = st.text_input("Gemini API Key",  type="password", placeholder="AIza...")
-    gpt_model         = st.selectbox("GPT 모델",  ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
-    gemini_model_name = st.selectbox("Gemini 모델", ["models/gemini-2.0-flash", "models/gemini-flash-latest"])
+{retry_ctx}
 
-    st.markdown("---")
+키워드가 있으면 분류 기준:
+- 광고/마케팅 키워드 → "퍼포먼스 마케팅 광고대행사" 류
+- 쇼핑/상품 키워드 → "온라인 쇼핑몰" 류
+- SaaS/B2B 키워드 → "B2B SaaS [기능]" 류
+- 교육 키워드 → "온라인 교육 플랫폼" 류
 
-    sim_count    = st.slider("시뮬레이션 횟수", 10, 100, 50, 10,
-                             help="적응형 조기 종료로 실제 비용은 설정값보다 낮을 수 있습니다")
-    market_scope = st.radio("경쟁사 범위", ["국내 (대한민국)", "글로벌"], horizontal=True)
-    n_competitors = 3  # 경쟁사 수 3개 고정
+JSON만 출력: {{"industry": "구체적 업종명"}}"""
 
-    st.markdown("---")
-
-    # 연결 상태
-    gpt_ok    = bool(openai_key and openai_key.startswith("sk-"))
-    gemini_ok = bool(gemini_key and len(gemini_key) > 10)
-
-    c1, c2 = st.columns(2)
-    c1.markdown("🟢 **GPT**"    if gpt_ok    else "⚪ **GPT**")
-    c2.markdown("🟢 **Gemini**" if gemini_ok else "🔴 **Gemini**")
-
-    # 비용 추적
-    tracker: CostTracker = st.session_state["cost_tracker"]
-    cost_summary = tracker.summary()
-    if cost_summary["api_calls"] > 0:
-        st.markdown(f"""
-        <div style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);
-            border-radius:8px;padding:10px 12px;margin-top:8px;font-size:.75rem;color:rgba(255,255,255,.85);">
-            💰 누적 비용: ~${cost_summary['estimated_usd']:.4f}<br>
-            🔢 API 호출: {cost_summary['api_calls']}회
-        </div>""", unsafe_allow_html=True)
-
-    # 캐시 통계
-    cache_stats = _cache.stats()
-    if cache_stats["entries"] > 0:
-        st.markdown(f"""
-        <div style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);
-            border-radius:8px;padding:8px 12px;margin-top:6px;font-size:.73rem;color:rgba(255,255,255,.75);">
-            ⚡ 캐시 히트율: {cache_stats['hit_rate']}% ({cache_stats['entries']}개 저장)
-        </div>""", unsafe_allow_html=True)
-
-    if st.button("🗑️ 캐시 초기화", key="btn_clear_cache", use_container_width=True):
-        _cache._store.clear()
-        st.session_state["cache_data"]   = {}
-        st.session_state["cost_tracker"] = CostTracker()
-        st.success("캐시 초기화 완료")
-
-    st.markdown("---")
-    st.markdown("**🔬 개발자 옵션**")
-    debug_mode = st.toggle(
-        "Debug 모드",
-        value=st.session_state.get("debug_mode", False),
-        key="debug_toggle",
-        help="각 파이프라인 단계의 입출력, Content Filter 결과, Citation Spot-check를 표시합니다",
-    )
-    st.session_state["debug_mode"] = debug_mode
-
-    st.markdown("---")
-    if st.button("▶ 데모 실행", key="btn_demo_sidebar", use_container_width=True):
-        st.session_state["run_demo"] = True
-
-
-# ─────────────────────────────────────────────
-# API 클라이언트 초기화
-# ─────────────────────────────────────────────
-
-def get_clients():
-    client_gpt    = None
-    client_gemini = None
-
-    if gpt_ok:
-        with CaptureError("init_gpt", log_level="error"):
-            import openai
-            client_gpt = openai.OpenAI(api_key=openai_key)
-
-    if gemini_ok:
-        with CaptureError("init_gemini", log_level="error"):
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            client_gemini = genai.GenerativeModel(gemini_model_name)
-
-    return client_gpt, client_gemini
-
-
-# ─────────────────────────────────────────────
-# 메인 헤더
-# ─────────────────────────────────────────────
-
-st.markdown("""
-<div class="main-header">
-    <h1 style="color:white !important; font-size:2rem !important; font-weight:800 !important; margin:0 !important; text-shadow:0 1px 3px rgba(0,0,0,.3);">🔍 AI 검색 점유율 분석 대시보드</h1>
-    <p style="color:rgba(255,255,255,.85) !important; font-size:1rem !important; margin:8px 0 0 !important;">GPT &amp; Gemini AI 엔진에서 내 사이트 인용 점유율 측정 — 비용 최적화 · 문맥 인식 · 3단계 크롤링</p>
-</div>""", unsafe_allow_html=True)
-
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("분석 엔진",  "GPT + Gemini", "2개 동시")
-col2.metric("시뮬레이션", f"{sim_count}회", "적응형 조기종료")
-col3.metric("API 연결",   f"{(1 if gpt_ok else 0)+(1 if gemini_ok else 0)}/2", "활성화")
-col4.metric("캐시 저장",  f"{_cache.stats()['entries']}개", f"히트율 {_cache.stats()['hit_rate']}%")
-col5.metric("누적 비용",  f"~${tracker.summary()['estimated_usd']:.4f}", "USD 추정")
-
-st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
-tab1, tab2, tab3 = st.tabs(["🤖 자동 분석형", "✏️ 수동 분석형", "📅 히스토리"])
-
-client_gpt, client_gemini = get_clients()
-
-# ─────────────────────────────────────────────
-# Tab 1: 자동 분석형
-# ─────────────────────────────────────────────
-
-with tab1:
-    st.markdown(f"""
-    <div class="result-card" style="background:{'linear-gradient(135deg,#1E1E1E,#252525)' if _dark else 'linear-gradient(135deg,#F5F5F5,#EEE)'};border-color:{_border};">
-        <h4>🤖 AI 타겟 질문 자동 도출 방식</h4>
-        <p style="color:{_text_muted};font-size:.88rem;margin:0;line-height:1.6;">
-            <b>파이프라인:</b> Crawl → 경쟁사(병렬) → 질문 생성 → Citation Spot-Check → 시뮬레이션<br>
-            <b>브랜드명과 업종을 직접 입력하면 분석 정확도가 높아집니다.</b>
-        </p>
-    </div>""", unsafe_allow_html=True)
-
-    col_u, col_i, col_b = st.columns([2, 1, 1])
-
-    with col_u:
-        url_auto = st.text_input("🌐 사이트 URL *", placeholder="예) naver.com", key="url_auto")
-
-    with col_i:
-        if "industry_widget" not in st.session_state:
-            st.session_state["industry_widget"] = st.session_state.get("industry_display", "")
-        manual_industry = st.text_input(
-            "🏭 업종 (필수입력) *",
-            placeholder="예) 퍼포먼스 마케팅 광고대행사",
-            key="industry_widget",
-        )
-        st.session_state["industry_display"] = st.session_state["industry_widget"]
-
-    with col_b:
-        if "brand_widget" not in st.session_state:
-            st.session_state["brand_widget"] = st.session_state.get("brand_display", "")
-        st.text_input(
-            "🏷️ 브랜드명 (필수입력) *",
-            placeholder="예) 프로그레스미디어",
-            key="brand_widget",
-        )
-        st.session_state["brand_display"] = st.session_state["brand_widget"]
-
-    # 입력 안내
-    if not st.session_state.get("industry_widget") or not st.session_state.get("brand_widget"):
-        st.info("💡 업종과 브랜드명을 직접 입력하면 분석 정확도가 크게 올라가요!")
-
-    c_run, c_demo = st.columns([3, 1])
-    with c_run:
-        run_auto = st.button("🚀 자동 분석 시작", key="btn_auto", use_container_width=True)
-    with c_demo:
-        demo_auto = st.button("🎬 데모", key="btn_demo_auto", use_container_width=True)
-
-    # pre_clicked 는 제거됐으므로 항상 False
-    pre_clicked = False
-
-    q_engine = st.radio("질문 도출 엔진", ["GPT", "Gemini"], horizontal=True)
-
-    # ── 업종 미리 분석 (제거 — 사용자 직접 입력 방식으로 전환) ──
-    if pre_clicked:
-        if not url_auto.strip():
-            st.warning("URL을 먼저 입력하세요.")
-        elif not gpt_ok and not gemini_ok:
-            st.warning("API 키가 필요합니다.")
-        else:
-            _pre_url    = normalize_url(url_auto.strip())
-            _pre_domain = extract_domain(_pre_url)
-            status_box  = st.empty()
-            stages_log  = []
-
-            def _pre_cb(stage, msg):
-                stages_log.append(f"[{stage}] {msg}")
-                status_box.markdown(
-                    "**파이프라인 진행:**\n" +
-                    "\n".join(f"- {s}" for s in stages_log[-4:])
+            with CaptureError("biz_industry_retry", log_level="warning"):
+                r2 = (
+                    call_gpt(client_gpt, retry_p, max_tokens=80, model=model_gpt, temperature=0.1)
+                    if client_gpt else
+                    call_gemini(client_gemini, retry_p, max_tokens=80, temperature=0.1)
                 )
+                m2 = re.search(r'\{.*\}', r2, re.DOTALL)
+                if m2:
+                    ni = json.loads(m2.group()).get("industry", "")
+                    if ni and not any(bad in ni.lower() for bad in _BAD_INDUSTRIES):
+                        biz_dict["industry"] = ni
+                        state.log("biz_industry_retry", {"original": industry, "corrected": ni})
 
-            with st.spinner("크롤링 → 업종 분석 중..."):
-                with CaptureError("pre_pipeline", log_level="warning") as ctx:
-                    _pre_state = run_pipeline(
-                        client_gpt, client_gemini,
-                        url=_pre_url, model_gpt=gpt_model,
-                        confirmed_industry="",
-                        confirmed_brand="",
-                        q_engine=q_engine,
-                        market_scope=market_scope,
-                        n_competitors=0,
-                        tracker=tracker,
-                        use_cache=True,
-                        debug=st.session_state.get("debug_mode", False),
-                        status_callback=_pre_cb,
-                    )
+    if not biz_dict:
+        state.errors.append("biz_parse: JSON 파싱 실패, 폴백 사용")
+        biz_dict = {
+            "brand_name":       stem.upper(),
+            "industry":         f"{stem} 서비스",
+            "industry_category":"기타",
+            "core_product":     "서비스",
+            "target_audience":  "잠재 고객",
+            "key_services":     [],
+            "confidence":       "low",
+        }
 
+    biz_dict["crawl_tier"] = crawl_result.tier_used if crawl_result else 0
+
+    if confirmed_industry.strip():
+        biz_dict["industry"]    = confirmed_industry.strip()
+        biz_dict["confidence"]  = "high"
+        state.log("biz_user_override", {"industry": confirmed_industry})
+
+    biz = BusinessInfo.from_dict(biz_dict)
+    state.record_time("biz_analysis", time.time() - t0)
+    state.log("biz_output", biz.to_dict())
+    return biz
+
+
+# ─────────────────────────────────────────────
+# 질문 생성 (crawl + biz 모두 참조)
+# ─────────────────────────────────────────────
+
+def generate_questions_from_state(
+    client_gpt, client_gemini,
+    state: PipelineState,
+    model_gpt: str,
+    engine: str = "GPT",
+) -> list[str]:
+    biz       = state.biz_info
+    crawl_res = state.crawl_result
+
+    if biz is None:
+        state.errors.append("question_gen: biz_info 없음")
+        return []
+
+    t0 = time.time()
+
+    # 핵심 키워드 추출
+    site_keywords = ""
+    if crawl_res and crawl_res.body_text:
+        body    = crawl_res.body_text[:2000]
+        ko_words = re.findall(r'[가-힣]{2,}', body)
+        top_ko   = [w for w, _ in Counter(ko_words).most_common(10) if len(w) >= 2]
+        en_words = re.findall(r'[A-Z][a-zA-Z]{3,}', body)
+        top_en   = list(dict.fromkeys(en_words))[:5]
+        site_keywords = ", ".join(top_ko[:8] + top_en[:3])
+
+    category_hint = _CATEGORY_HINTS.get(
+        biz.industry_category,
+        f"{biz.industry} 분야에서 {biz.target_audience}가 실제로 고민하는 핵심 질문"
+    )
+    services_str = ", ".join(biz.key_services) if biz.key_services else biz.core_product
+
+    prompt = f"""당신은 {biz.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
+
+[분석 대상 — 실제 사이트 분석 결과]
+- 업종: {biz.industry} ({biz.industry_category})
+- 핵심 서비스: {services_str}
+- 주요 타겟: {biz.target_audience}
+- 사이트 실제 키워드: {site_keywords if site_keywords else "(크롤 데이터 없음)"}
+- 크롤 품질: Tier{biz.crawl_tier} / 신뢰도 {biz.confidence}
+
+[핵심 목표]
+{biz.target_audience}가 ChatGPT, Gemini, 네이버 AI 등에게 실제로 물어볼 법한 질문을 만드세요.
+이 질문에 AI가 답할 때 {biz.brand_name} 사이트가 자연스럽게 인용될 수 있어야 합니다.
+
+[질문 방향]
+{category_hint}
+
+[생성 규칙 — 엄격 준수]
+1. 브랜드명({biz.brand_name}) 절대 포함 금지 — 실제 사용자는 브랜드를 모르고 검색함
+2. 위 "사이트 실제 키워드"를 질문 소재로 적극 활용 (실제 사이트 서비스 반영)
+3. 구매 결정 5단계(인지→비교→신뢰→가격→전환)를 각각 다룰 것
+4. {biz.industry} 전문 용어·지표·관행 적극 활용
+5. "~는 무엇인가요?", "~를 소개해주세요" 금지
+6. 구체적 수치·비교·상황·지역 포함 필수
+
+[좋은 예시]
+- "네이버 공식 광고대행사 추천해줘"
+- "중소기업 구글 광고 맡길 대행사 어디가 좋아?"
+- "퍼포먼스 마케팅 잘하는 광고대행사 ROAS 비교"
+
+[품질 기준]
+✅ 브랜드명 없이 업종/서비스 키워드만으로 구성
+✅ 비교/수치/사례/비용/지역 중 하나 이상 포함
+✅ 실제 구매·도입 맥락에서 나올 법한 자연스러운 질문
+❌ 브랜드명, 회사명, 도메인 주소 포함
+❌ 단순 정보 탐색형 (역사, 소개, 설명 등)
+
+번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결.
+절대 금지: 마크다운 기호(_arrowRight_, *, **, →, ▶, :emoji:), 이모지, 특수문자 사용 금지. 순수 텍스트만 출력."""
+
+    result_str = ""
+    with CaptureError("question_gen", log_level="warning") as ctx:
+        if engine == "GPT" and client_gpt:
+            result_str = call_gpt(client_gpt, prompt, system=_QUESTION_SYSTEM,
+                                  max_tokens=600, model=model_gpt, temperature=0.85)
+        elif client_gemini:
+            result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.85)
+        elif client_gpt:
+            result_str = call_gpt(client_gpt, prompt, system=_QUESTION_SYSTEM,
+                                  max_tokens=600, model=model_gpt, temperature=0.85)
+
+    if not ctx.ok:
+        state.errors.append(f"question_gen: {ctx.error}")
+
+    # 파싱 — Gemini 마크다운 아이콘 완전 제거
+    lines = [ln.strip() for ln in result_str.split("\n") if ln.strip()]
+    raw_questions = []
+    for ln in lines:
+        clean = ln
+        clean = re.sub(r'_[a-zA-Z]+_', '', clean)             # _arrowRight_, _bold_ 등
+        clean = re.sub(r':[a-z_]+:', '', clean)                # :emoji_name: 형식
+        clean = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', clean) # *bold*, **bold**, ***bold***
+        clean = re.sub(r'^[\d]+[.)]\s*', '', clean)          # 앞머리 번호
+        clean = re.sub(r'^[-•*→▶►•◦‣⁃]\s*', '', clean)       # 앞머리 bullet/화살표 전체
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)           # 앞머리 [태그]
+        clean = re.sub(r'[\u2600-\u27BF]', '', clean)        # 유니코드 특수기호
+        clean = re.sub(r'[\U0001F300-\U0001F9FF]', '', clean) # 이모지
+        clean = re.sub(r'\s{2,}', ' ', clean).strip()         # 연속 공백 정리
+        if len(clean) > 10 and not clean.startswith("참고") and not clean.startswith("주의"):
+            if not clean.endswith("?"):
+                clean += "?"
+            raw_questions.append(clean)
+
+    # Content Filter
+    filtered       = []
+    filter_results = []
+    for q in raw_questions:
+        fr = content_filter(q, biz.brand_name)
+        filter_results.append({"question": q, **fr})
+        if fr["pass"]:
+            filtered.append(q)
+        else:
+            state.log("question_filtered", {"question": q, "reason": fr["reason"]})
+
+    state.log("question_gen", {
+        "raw_count":          len(raw_questions),
+        "filtered_count":     len(filtered),
+        "filter_results":     filter_results,
+        "site_keywords_used": site_keywords,
+    })
+
+    questions = filtered[:5]
+
+    # 최소 3개 보장
+    if len(questions) < 3:
+        for q in raw_questions:
+            if q not in questions:
+                questions.append(q)
+            if len(questions) >= 5:
+                break
+
+    # 폴백
+    if len(questions) < 3:
+        is_ad = "광고" in biz.industry or "마케팅" in biz.industry
+        state.errors.append("question_gen: 폴백 질문 사용")
+        questions = (
+            [
+                f"{biz.industry} 추천해줘 ROAS 높은 곳?",
+                f"{biz.industry} 계약 전 확인해야 할 대행수수료 구조는?",
+                f"중소기업 {biz.industry} 맡길 때 업종별 성공 사례 알려줘",
+                f"광고 직접 운영 vs {biz.industry} 위탁 — 비용 차이 비교",
+                f"{biz.industry} 잘하는 곳 어떻게 비교하나요?",
+            ] if is_ad else [
+                f"{biz.industry} 서비스 비교할 때 핵심 기준은?",
+                f"{biz.target_audience} 에게 맞는 {biz.industry} 추천해줘",
+                f"{biz.industry} 비용 구조 업계 평균 어느 정도야?",
+                f"{biz.industry} 실제 사용 후기 어디서 봐?",
+                f"{biz.industry} 선택할 때 가장 중요한 게 뭐야?",
+            ]
+        )
+
+    state.record_time("question_gen", time.time() - t0)
+    return questions[:5]
+
+
+# ─────────────────────────────────────────────
+# 메인 파이프라인
+# ─────────────────────────────────────────────
+
+def run_pipeline(
+    client_gpt, client_gemini,
+    url: str,
+    model_gpt: str,
+    confirmed_industry: str = "",
+    confirmed_brand: str = "",
+    q_engine: str = "GPT",
+    market_scope: str = "국내 (대한민국)",
+    n_competitors: int = 3,  # 고정값 — 항상 3개만 도출
+    tracker: Optional[CostTracker] = None,
+    use_cache: bool = True,
+    debug: bool = False,
+    status_callback=None,
+) -> PipelineState:
+
+    from urllib.parse import urlparse
+
+    try:
+        p      = urlparse(url if url.startswith("http") else "https://" + url)
+        domain = p.netloc.replace("www.", "")
+    except Exception:
+        domain = url
+
+    state = PipelineState(url=url, domain=domain)
+    cache = get_cache()
+
+    def _cb(stage: str, msg: str):
+        if status_callback:
+            status_callback(stage, msg)
+        if debug:
+            logger.info(f"[{stage}] {msg}")
+
+    # ── Step 1: 크롤링 + 검색 보완 ──
+    _cb("crawl", f"{domain} 크롤링 중 (3-tier fallback)...")
+    t0 = time.time()
+
+    cached_crawl = None
+    if use_cache:
+        key          = cache.make_key("pipeline_crawl", url)
+        cached_crawl = cache.get(key)
+        if cached_crawl:
+            cr_data = cached_crawl["crawl"]
+            state.crawl_result = CrawlResult(
+                url          = cr_data.get("url", url),
+                title        = cr_data.get("title", ""),
+                description  = cr_data.get("description", ""),
+                body_text    = cr_data.get("body_text", ""),
+                html_snippet = cr_data.get("html_snippet", ""),  # BUG FIX: 누락 필드 기본값
+                tier_used    = cr_data.get("tier_used", 0),
+                ok           = cr_data.get("ok", False),
+                error        = cr_data.get("error", ""),
+            )
+            state.search_ctx = cached_crawl.get("search_ctx", "")
+            _cb("crawl", f"캐시 히트 (Tier{state.crawl_result.tier_used})")
+            state.record_time("crawl", 0)
+
+    if state.crawl_result is None:
+        stem = domain.split(".")[0]
+
+        def _do_crawl():
+            return crawl(url, use_cache=False)
+
+        def _do_search():
+            ctx = crawl_search(f"{stem} 서비스 업종 소개")
+            if not ctx:
+                ctx = crawl_search(f"{stem} company overview")
+            return ctx or ""
+
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            f_crawl  = ex.submit(_do_crawl)
+            f_search = ex.submit(_do_search)
+
+            with CaptureError("crawl_future", log_level="warning") as ctx:
+                state.crawl_result = f_crawl.result(timeout=25)
             if not ctx.ok:
-                st.error(f"분석 실패: {ctx.error}")
-            else:
-                biz = _pre_state.biz_info
-                cr  = _pre_state.crawl_result
+                state.errors.append(f"crawl: {ctx.error}")
+                state.crawl_result = CrawlResult(url=url, ok=False, tier_used=0)
 
-                # BUG FIX: rerun 전에 두 키 모두 강제 업데이트
-                st.session_state["industry_display"] = biz.industry
-                st.session_state["industry_widget"]  = biz.industry
-                st.session_state["brand_display"]    = biz.brand_name
-                st.session_state["brand_widget"]     = biz.brand_name
+            with CaptureError("search_future", log_level="warning"):
+                state.search_ctx = f_search.result(timeout=20)
 
-                st.session_state["pre_pipeline_state"] = {
-                    "url":       _pre_url,
-                    "biz":       biz.to_dict(),
-                    "crawl_ok":  cr.ok if cr else False,
-                    "crawl_tier":cr.tier_used if cr else 0,
-                }
+        if use_cache and state.crawl_result.ok:
+            cache.set(cache.make_key("pipeline_crawl", url), {
+                "crawl": {
+                    "url":          state.crawl_result.url,
+                    "title":        state.crawl_result.title,
+                    "description":  state.crawl_result.description,
+                    "body_text":    state.crawl_result.body_text,
+                    "html_snippet": getattr(state.crawl_result, "html_snippet", ""),
+                    "tier_used":    state.crawl_result.tier_used,
+                    "ok":           state.crawl_result.ok,
+                    "error":        state.crawl_result.error,
+                },
+                "search_ctx": state.search_ctx,
+            }, namespace="crawl")
 
-                col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-                col_p1.metric("브랜드",   biz.brand_name)
-                col_p2.metric("업종",     biz.industry[:20])
-                col_p3.metric("크롤 Tier",f"Tier{cr.tier_used if cr else 0}")
-                col_p4.metric("신뢰도",   biz.confidence)
+    state.record_time("crawl", time.time() - t0)
+    state.log("crawl", {
+        "tier":           state.crawl_result.tier_used,
+        "ok":             state.crawl_result.ok,
+        "body_len":       len(state.crawl_result.body_text),
+        "title":          state.crawl_result.title[:80],
+        "search_ctx_len": len(state.search_ctx),
+    })
+    _cb("crawl", f"완료 (Tier{state.crawl_result.tier_used}, 본문 {len(state.crawl_result.body_text)}자)")
 
-                if biz.key_services:
-                    st.caption("📋 주요 서비스: " + " · ".join(biz.key_services[:4]))
+    # ── Step 2: Biz 분석 ──
+    _cb("biz", "업종 AI 분석 중...")
+    t0 = time.time()
 
-                st.info("업종이 맞지 않으면 위 입력창에서 수정 후 [자동 분석 시작]을 누르세요.")
+    biz_cache_key = cache.make_key("pipeline_biz", url, confirmed_industry)
+    if use_cache:
+        cached_biz = cache.get(biz_cache_key)
+        if cached_biz:
+            state.biz_info = BusinessInfo.from_dict(cached_biz)
+            _cb("biz", f"캐시 히트: {state.biz_info.brand_name} | {state.biz_info.industry}")
 
-                if st.session_state.get("debug_mode") and _pre_state:
-                    render_debug_panel(_pre_state)
-
-                save_cache()
-                st.rerun()
-
-    # ── 데모 ──
-    elif demo_auto or st.session_state.get("run_demo"):
-        st.session_state["run_demo"] = False
-        demo_url  = normalize_url(url_auto.strip() if url_auto.strip() else "naver.com")
-        domain_d  = extract_domain(demo_url)
-        dd        = get_demo(demo_url)
-
-        st.info(f"🎬 데모 모드 — {domain_d} 샘플 데이터")
-
-        prog = st.progress(0)
-        for i, q in enumerate(dd["scenario"]["questions"]):
-            st.markdown(f"⏳ Q{i+1}: *{q[:50]}*")
-            prog.progress((i+1)/5)
-            time.sleep(0.1)
-        prog.progress(1.0)
-        st.success("✅ 데모 완료")
-
-        for i, q in enumerate(dd["scenario"]["questions"], 1):
-            st.markdown(f"""
-            <div class="inline-card">
-                <span style="background:linear-gradient(135deg,#333,#666);color:white;
-                    min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:.8rem;
-                    display:flex;align-items:center;justify-content:center;">{i}</span>
-                <span class="q-text">{q}</span>
-            </div>""", unsafe_allow_html=True)
-
-        render_bar_chart(
-            dd["scenario"]["results"],
-            dd["scenario"]["questions"],
-            f"[데모] {domain_d} 인용 점유율"
+    if state.biz_info is None:
+        state.biz_info = analyze_business_from_crawl(
+            client_gpt, client_gemini, state,
+            model_gpt=model_gpt,
+            confirmed_industry=confirmed_industry,
         )
+        if use_cache:
+            cache.set(biz_cache_key, state.biz_info.to_dict(), namespace="biz")
 
-        for i, (q, r) in enumerate(zip(dd["scenario"]["questions"], dd["scenario"]["results"])):
-            avg = (r["gpt_rate"] + r["gemini_rate"]) / 2
-            with st.expander(f"Q{i+1}. {q[:50]}", expanded=(i == 0)):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("GPT",    f"{r['gpt_rate']}%")
-                c2.metric("Gemini", f"{r['gemini_rate']}%")
-                c3.metric("평균",   f"{avg:.1f}%")
+    state.record_time("biz_analysis", time.time() - t0)
 
-        render_strategy(dd["strategy"], demo_url)
+    # 브랜드명 사용자 오버라이드
+    if confirmed_brand.strip() and state.biz_info:
+        state.biz_info.brand_name = confirmed_brand.strip()
+        state.log("brand_override", {"brand_name": confirmed_brand.strip()})
 
-    # ── 실제 분석 ──
-    elif run_auto:
-        if not url_auto:
-            st.error("URL을 입력하세요.")
-        elif not gpt_ok and not gemini_ok:
-            st.error("API 키를 입력하세요.")
+    _cb("biz", f"완료: {state.biz_info.brand_name} | {state.biz_info.industry} | {state.biz_info.confidence}")
+
+    # ── Step 3: 경쟁사 + 질문 병렬 실행 ──
+    # BUG FIX: biz_info 확정 후 executor를 try/finally로 감싸서 누수 방지
+    _cb("competitors", f"[{market_scope}] 경쟁사 분석 중...")
+    _cb("questions",   "크롤 데이터 기반 타겟 질문 도출 중...")
+
+    t0         = time.time()
+    comp_future = None
+    executor    = cf.ThreadPoolExecutor(max_workers=2)
+
+    try:
+        # BUG FIX: biz_info가 확정된 상태에서 submit
+        def _do_competitors():
+            return discover_competitors(
+                client_gpt, client_gemini,
+                state.biz_info, url,
+                market_scope=market_scope,
+                model_gpt=model_gpt,
+                n_competitors=n_competitors,
+                use_cache=use_cache,
+            )
+
+        comp_future = executor.submit(_do_competitors)
+
+        # 질문 생성 (메인 스레드에서 직렬 실행 — biz + crawl 공유 state 사용)
+        q_cache_key = cache.make_key(
+            "pipeline_questions", url, state.biz_info.industry, q_engine
+        )
+        if use_cache:
+            cached_q = cache.get(q_cache_key)
+            if cached_q:
+                state.questions = cached_q
+                _cb("questions", f"캐시 히트: {len(state.questions)}개")
+
+        if not state.questions:
+            state.questions = generate_questions_from_state(
+                client_gpt, client_gemini, state,
+                model_gpt=model_gpt, engine=q_engine,
+            )
+            if use_cache and state.questions:
+                cache.set(q_cache_key, state.questions, namespace="biz")
+
+        state.record_time("question_gen", time.time() - t0)
+        _cb("questions", f"완료: {len(state.questions)}개 질문 (content filter 통과)")
+
+        # 경쟁사 결과 수집
+        # BUG FIX: comp_future None 체크 추가
+        if comp_future is not None:
+            with CaptureError("comp_collect", log_level="warning") as ctx:
+                state.competitors = comp_future.result(timeout=60)
+            if not ctx.ok:
+                state.errors.append(f"competitors: {ctx.error}")
+                state.competitors = []
+        _cb("competitors", f"완료: {len(state.competitors)}개")
+
+    finally:
+        # BUG FIX: 예외 발생 시에도 반드시 shutdown
+        executor.shutdown(wait=False)
+
+    # ── Step 4: Citation Spot-Check ──
+    if state.questions and (client_gpt or client_gemini):
+        _cb("spot_check", "Citation 정확도 spot-check 중 (5회 샘플)...")
+        t0 = time.time()
+
+        brand_variants = build_brand_variants(url, state.biz_info.to_dict())
+        first_q        = state.questions[0]
+
+        spot = citation_spot_check(
+            client_gpt, client_gemini,
+            brand_variants=brand_variants,
+            question=first_q,
+            model_gpt=model_gpt,
+            n_samples=5,
+            tracker=tracker,
+        )
+        state.spot_check = spot
+        state.record_time("spot_check", time.time() - t0)
+        state.log("spot_check", spot)
+        _cb("spot_check",
+            f"완료 | 초기 점유율: {spot['hit_rate']}% | FP 리스크: {spot['false_positive_risk']}")
+
+    return state
+
+
+# ─────────────────────────────────────────────
+# Debug 패널 렌더링
+# ─────────────────────────────────────────────
+
+def render_debug_panel(state: PipelineState):
+    import streamlit as st
+    import pandas as pd
+
+    st.markdown("---")
+    st.markdown("### 🔬 Debug 패널")
+
+    if state.timing:
+        cols = st.columns(len(state.timing))
+        for i, (k, v) in enumerate(state.timing.items()):
+            cols[i].metric(k, f"{v}s")
+
+    # BUG FIX: 마크다운 이스케이프 제거 (st.error는 마크다운 미지원)
+    if state.errors:
+        st.error("파이프라인 에러:\n" + "\n".join(f"• {e}" for e in state.errors))
+
+    with st.expander("🌐 Crawl 결과", expanded=False):
+        if state.crawl_result:
+            cr = state.crawl_result
+            st.json({
+                "tier":         cr.tier_used,
+                "ok":           cr.ok,
+                "title":        cr.title,
+                "description":  cr.description[:200],
+                "body_len":     len(cr.body_text),
+                "body_preview": cr.body_text[:500],
+            })
         else:
-            target_url = normalize_url(url_auto)
-            domain     = extract_domain(target_url)
-            debug_mode = st.session_state.get("debug_mode", False)
+            st.warning("크롤 결과 없음")
+        if state.search_ctx:
+            st.text_area("검색 보완 컨텍스트", value=state.search_ctx[:1000], height=150)
 
-            confirmed_industry = st.session_state["industry_display"].strip()
-            confirmed_brand    = st.session_state["brand_display"].strip()
+    with st.expander("🏢 Biz 분석 결과", expanded=False):
+        if state.biz_info:
+            st.json(state.biz_info.to_dict())
+        else:
+            st.warning("Biz 분석 결과 없음")
 
-            # ── 파이프라인 진행 상태 표시 ──
-            pipeline_status = st.container()
-            prog_bar   = pipeline_status.progress(0)
-            stage_text = pipeline_status.empty()
-            stage_log  = []
+    with st.expander("📝 질문 생성 + Content Filter", expanded=False):
+        q_log = [l for l in state.debug_log if l["stage"] in ("question_gen", "question_filtered")]
+        if q_log:
+            for entry in q_log:
+                if entry["stage"] == "question_gen" and "filter_results" in entry:
+                    rows = []
+                    for fr in entry["filter_results"]:
+                        rows.append({
+                            "질문": fr["question"][:60],
+                            "점수": fr["score"],
+                            "통과": "✅" if fr["pass"] else "❌",
+                            "사유": fr["reason"][:50],
+                        })
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    st.caption(f"사이트 키워드: {entry.get('site_keywords_used', '없음')}")
+                elif entry["stage"] == "question_filtered":
+                    st.caption(f"❌ 필터링됨: {entry.get('question','')[:50]} — {entry.get('reason','')}")
+        else:
+            st.info("질문 생성 로그 없음")
 
-            _stage_weights = {
-                "crawl":      0.15,
-                "biz":        0.30,
-                "competitors":0.40,
-                "questions":  0.55,
-                "spot_check": 0.65,
-            }
+    with st.expander("🎯 Citation Spot-Check", expanded=False):
+        if state.spot_check:
+            sp = state.spot_check
+            c1, c2, c3 = st.columns(3)
+            c1.metric("초기 점유율 추정", f"{sp['hit_rate']}%")
+            c2.metric("FP 리스크",        sp["false_positive_risk"])
+            c3.metric("샘플 수",          sp["n_samples"])
 
-            def _status_cb(stage: str, msg: str):
-                stage_log.append(f"**[{stage}]** {msg}")
-                w = _stage_weights.get(stage, 0.5)
-                prog_bar.progress(w)
-                stage_text.markdown(
-                    "\n".join(stage_log[-3:]),
-                    unsafe_allow_html=False
-                )
+            if sp.get("suspect_variants"):
+                st.warning(f"⚠️ 오탐 의심 변형: {sp['suspect_variants']}")
+            if sp.get("refined_variants"):
+                st.info(f"✅ 정제된 변형 ({len(sp['refined_variants'])}개): {sp['refined_variants']}")
 
-            # ── Step 0: 사전 분석 캐시 재사용 확인 ──
-            _pre_cached = st.session_state.get("pre_pipeline_state", {})
-            _reuse_pre  = (
-                _pre_cached.get("url") == target_url
-                and _pre_cached.get("biz")
-            )
-            if _reuse_pre and not confirmed_industry:
-                confirmed_industry = _pre_cached["biz"].get("industry", "")
-                stage_text.info(
-                    f"ℹ️ 사전 분석 재사용: "
-                    f"{_pre_cached['biz'].get('brand_name','')} | "
-                    f"{_pre_cached['biz'].get('industry','')}"
-                )
-
-            # ── Step 1: 파이프라인 실행 ──
-            t_pipeline = time.time()
-
-            with CaptureError("full_pipeline", log_level="warning") as pipe_ctx:
-                pipeline_state = run_pipeline(
-                    client_gpt, client_gemini,
-                    url=target_url,
-                    model_gpt=gpt_model,
-                    confirmed_industry=confirmed_industry,
-                    confirmed_brand=confirmed_brand,
-                    q_engine=q_engine,
-                    market_scope=market_scope,
-                    n_competitors=n_competitors,
-                    tracker=tracker,
-                    use_cache=True,
-                    debug=debug_mode,
-                    status_callback=_status_cb,
-                )
-
-            if not pipe_ctx.ok:
-                stage_text.error(f"파이프라인 오류: {pipe_ctx.error}")
-                st.stop()
-
-            elapsed_pipe = int(time.time() - t_pipeline)
-            prog_bar.progress(0.65)
-            stage_text.success(
-                f"✅ 파이프라인 완료 ({elapsed_pipe}초) | "
-                f"크롤 Tier{pipeline_state.crawl_result.tier_used if pipeline_state.crawl_result else 0} | "
-                f"캐시 히트율 {_cache.stats()['hit_rate']}%"
-            )
-
-            save_cache()
-            st.session_state["cost_tracker"] = tracker
-
-            biz_info    = pipeline_state.biz_info
-            questions   = pipeline_state.questions
-            competitors = pipeline_state.competitors
-
-            # ── Biz 분석 결과 요약 ──
-            st.markdown("---")
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("브랜드",   biz_info.brand_name)
-            c2.metric("업종",     biz_info.industry[:18])
-            c3.metric("크롤 Tier",f"Tier {biz_info.crawl_tier}")
-            c4.metric("신뢰도",   biz_info.confidence)
-            c5.metric("경쟁사",   f"{len(competitors)}개")
-
-            if biz_info.key_services:
-                st.caption("📋 핵심 서비스: " + " · ".join(biz_info.key_services[:5]))
-
-            if biz_info.is_vague_industry():
-                st.warning(
-                    f"⚠️ 업종이 모호합니다: **{biz_info.industry}**\n"
-                    "좌측 '업종 확인·수정'란에서 구체적인 업종을 입력 후 다시 실행하세요."
-                )
-
-            # ── Citation Spot-Check 결과 표시 ──
-            spot = pipeline_state.spot_check
-            if spot:
-                fp_risk   = spot.get("false_positive_risk", "unknown")
-                fp_color  = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(fp_risk, "⚪")
+            for i, s in enumerate(sp.get("sample_responses", [])[:3]):
+                color = "✅" if s["cited"] else "❌"
+                conf  = s.get("confidence", 0)
                 st.markdown(
-                    f"**🎯 Citation 정확도 Spot-Check** "
-                    f"| 초기 추정: `{spot['hit_rate']}%` "
-                    f"| FP 리스크: {fp_color} `{fp_risk}` "
-                    f"| 샘플 {spot['n_samples']}회"
+                    f"**샘플 {i+1}** {color} "
+                    f"confidence={conf:.2f} "
+                    f"pattern={s.get('pattern_type','—')}"
                 )
-                if fp_risk == "high":
-                    st.warning(
-                        "⚠️ False Positive 리스크 높음. "
-                        "브랜드 변형 단어가 일반 문맥에서 오탐을 유발할 수 있습니다. "
-                        "결과 해석 시 주의하세요."
-                    )
-                if spot.get("suspect_variants"):
-                    st.caption(f"오탐 의심 변형: {spot['suspect_variants']}")
-
-            # ── 질문 목록 표시 ──
-            if not questions:
-                st.error("질문 생성 실패. 업종을 수동으로 입력 후 재시도하세요.")
-                if debug_mode:
-                    render_debug_panel(pipeline_state)
-                st.stop()
-
-            st.markdown(f"**📝 타겟 질문 {len(questions)}개 (Content Filter 통과)**")
-            for i, q in enumerate(questions, 1):
-                cf_result   = content_filter(q, biz_info.brand_name)
-                score_color = (
-                    "#10B981" if cf_result["score"] >= 70
-                    else "#F59E0B" if cf_result["score"] >= 40
-                    else "#EF4444"
-                )
-                st.markdown(f"""
-                <div class="inline-card">
-                    <span style="background:linear-gradient(135deg,#111,#444);color:white;
-                        min-width:26px;height:26px;border-radius:8px;font-weight:700;font-size:.8rem;
-                        display:flex;align-items:center;justify-content:center;">{i}</span>
-                    <span class="q-text">{q}</span>
-                    <span style="font-size:.75rem;font-weight:700;color:{score_color};white-space:nowrap;">
-                        Q{cf_result['score']}</span>
-                </div>""", unsafe_allow_html=True)
-
-            # ── Step 2: 병렬 시뮬레이션 ──
-            _n_engines = (1 if client_gpt else 0) + (1 if client_gemini else 0)
-            st.markdown(
-                f"**📊 병렬 시뮬레이션** "
-                f"<span style='color:{_text_muted};font-size:.82rem;'>⚡ {sim_count}회 × "
-                f"{len(questions)}개 × {_n_engines}엔진 | 문맥 인식 탐지 + 적응형 조기종료</span>",
-                unsafe_allow_html=True
-            )
-
-            refined_variants = spot.get("refined_variants") if spot else None
-
-            sim_prog = st.progress(0.65)
-            sim_stat = st.empty()
-            sim_stat.markdown("🚀 전체 질문 병렬 실행 중...")
-
-            t_sim = time.time()
-            all_results: list[SimResult] = run_all_simulations(
-                client_gpt, client_gemini, questions, target_url,
-                model_gpt=gpt_model, n=sim_count,
-                biz_info=biz_info.to_dict(),
-                tracker=tracker,
-                use_cache=True,
-            )
-            elapsed_sim = int(time.time() - t_sim)
-
-            sim_prog.progress(1.0)
-            sim_stat.success(
-                f"✅ 시뮬레이션 완료! ({elapsed_sim}초) | "
-                f"총 소요: {elapsed_pipe + elapsed_sim}초 | "
-                f"추정비용 ~${tracker.summary()['estimated_usd']:.4f}"
-            )
-
-            save_cache()
-            st.session_state["cost_tracker"] = tracker
-
-            render_bar_chart(
-                [r.to_dict() for r in all_results],
-                questions,
-                f"'{biz_info.brand_name}' AI 인용 점유율"
-            )
-
-            # ── 경쟁사 목록 간략 표시 ──
-            if competitors:
-                st.markdown("**🏢 도출된 경쟁사**")
-                comp_cols = st.columns(min(len(competitors), 5))
-                for i, comp in enumerate(competitors[:5]):
-                    # 가짜 도메인이면 표시 안 함
-                    from core.schemas import Competitor as _Comp
-                    if not _Comp.is_fake_domain(comp.domain if isinstance(comp, object) and hasattr(comp, 'domain') else comp.get('domain','')):
-                        comp_cols[i].markdown(
-                            f"**{comp.rank if hasattr(comp,'rank') else comp.get('rank',i+1)}.** "
-                            f"{comp.brand_name if hasattr(comp,'brand_name') else comp.get('brand_name','')}"
-                            f"\n\n<span style='font-size:.75rem;color:{_text_muted};'>"
-                            f"{comp.domain if hasattr(comp,'domain') else comp.get('domain','')}</span>",
-                            unsafe_allow_html=True
-                        )
-            else:
-                st.caption("⚠️ 경쟁사 분석을 완료하지 못했습니다. API 응답을 확인하세요.")
-
-            # ── 질문별 상세 결과 ──
-            st.markdown("### 📋 질문별 상세 결과")
-            for i, (q, r) in enumerate(zip(questions, all_results)):
-                gpt_v = f"{r.gpt_rate}%"    if r.gpt_rate    is not None else "—"
-                gem_v = f"{r.gemini_rate}%" if r.gemini_rate is not None else "—"
-                avg   = r.avg_rate or 0
-                gpt_ci= r.gpt_ci if hasattr(r, "gpt_ci") else None
-
-                badge_cls = (
-                    "share-badge-high" if avg >= 30
-                    else "share-badge-mid" if avg >= 10
-                    else "share-badge-low"
-                )
-
-                with st.expander(
-                    f"Q{i+1}. {q[:60]}{'...' if len(q) > 60 else ''}  —  평균 {avg:.1f}%",
-                    expanded=(i == 0)
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("GPT",    gpt_v)
-                    c2.metric("Gemini", gem_v)
-                    c3.metric("평균",   f"{avg:.1f}%")
-                    if gpt_ci and gpt_ci[0] is not None and gpt_ci[1] is not None:
-                        c4.metric("95% CI", f"{gpt_ci[0]:.1f}~{gpt_ci[1]:.1f}%")
-
-                    st.markdown(
-                        f'<span class="{badge_cls}">점유율 {avg:.1f}%</span>',
-                        unsafe_allow_html=True
-                    )
-
-            # ── 전략 분석 ──
-            st.markdown("---")
-            with st.spinner("전략 분석 생성 중..."):
-                with CaptureError("strategy", log_level="warning") as s_ctx:
-                    strategy = run_strategy_analysis(
-                        client_gpt, client_gemini,
-                        biz_info=biz_info,
-                        competitors=competitors,
-                        sim_results=all_results,
-                        questions=questions,
-                        tracker=tracker,
-                    )
-
-            if s_ctx.ok and strategy:
-                render_strategy(strategy, target_url)
-            else:
-                st.warning("전략 분석을 생성하지 못했습니다. API 키를 확인하세요.")
-
-            if debug_mode:
-                render_debug_panel(pipeline_state)
-
-            save_cache()
-            st.session_state["cost_tracker"] = tracker
-
-
-# ─────────────────────────────────────────────
-# Tab 2: 수동 분석형
-# ─────────────────────────────────────────────
-
-with tab2:
-    st.markdown(f"""
-    <div class="result-card" style="background:{'linear-gradient(135deg,#1E1E1E,#252525)' if _dark else 'linear-gradient(135deg,#F5F5F5,#EEE)'};border-color:{_border};">
-        <h4>✏️ 수동 질문 입력 방식</h4>
-        <p style="color:{_text_muted};font-size:.88rem;margin:0;line-height:1.6;">
-            타겟 질문을 직접 입력하고 인용 점유율을 측정합니다.<br>
-            자동 분석 없이 빠르게 특정 질문만 테스트할 때 사용하세요.
-        </p>
-    </div>""", unsafe_allow_html=True)
-
-    url_manual = st.text_input("🌐 사이트 URL", placeholder="예) yoursite.com", key="url_manual")
-
-    st.markdown(f"**📝 타겟 질문 입력** <span style='color:{_text_muted};font-size:.82rem;'>최대 10개</span>",
-                unsafe_allow_html=True)
-
-    manual_questions = []
-    for idx in range(1, 11):
-        q = st.text_input(f"Q{idx}", placeholder=f"질문 {idx}번 (선택)", key=f"mq_{idx}",
-                          label_visibility="collapsed")
-        if q.strip():
-            manual_questions.append(q.strip())
-
-    run_manual = st.button("🚀 수동 분석 시작", key="btn_manual", use_container_width=False)
-
-    if run_manual:
-        if not url_manual:
-            st.error("URL을 입력하세요.")
-        elif not manual_questions:
-            st.error("질문을 최소 1개 이상 입력하세요.")
-        elif not gpt_ok and not gemini_ok:
-            st.error("API 키를 입력하세요.")
+                st.caption(s["response"][:200])
         else:
-            target_manual = normalize_url(url_manual)
-            st.markdown(f"**📊 {len(manual_questions)}개 질문 시뮬레이션 중...**")
-            m_prog = st.progress(0)
-            m_results: list[SimResult] = run_all_simulations(
-                client_gpt, client_gemini, manual_questions, target_manual,
-                model_gpt=gpt_model, n=sim_count,
-                biz_info={},
-                tracker=tracker,
-                use_cache=True,
-            )
-            m_prog.progress(1.0)
-            save_cache()
-            st.session_state["cost_tracker"] = tracker
+            st.info("Spot-check 데이터 없음")
 
-            render_bar_chart(
-                [r.to_dict() for r in m_results],
-                manual_questions,
-                f"수동 분석 — {extract_domain(target_manual)}"
-            )
-
-            st.markdown("### 📋 질문별 상세 결과")
-            for i, (q, r) in enumerate(zip(manual_questions, m_results)):
-                avg = r.avg_rate or 0
-                with st.expander(f"Q{i+1}. {q[:60]}", expanded=(i == 0)):
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("GPT",    f"{r.gpt_rate}%"    if r.gpt_rate    is not None else "—")
-                    c2.metric("Gemini", f"{r.gemini_rate}%" if r.gemini_rate is not None else "—")
-                    c3.metric("평균",   f"{avg:.1f}%")
-
-
-# ─────────────────────────────────────────────
-# Tab 3: 히스토리
-# ─────────────────────────────────────────────
-
-with tab3:
-    history = st.session_state.get("analysis_history", [])
-    if not history:
-        st.markdown(f"""
-        <div class="hist-empty">
-            <div style="font-size:3rem;margin-bottom:12px;">📭</div>
-            <p style="color:{_text_muted};font-size:1rem;">아직 분석 기록이 없습니다.</p>
-            <p style="color:{_text_muted};font-size:.85rem;">자동 또는 수동 분석을 실행하면 여기에 기록됩니다.</p>
-        </div>""", unsafe_allow_html=True)
-    else:
-        for h in reversed(history[-20:]):
-            with st.expander(f"🕐 {h.get('ts','')} — {h.get('domain','')} ({h.get('n_q',0)}개 질문)"):
-                st.json(h)
-
-
-# ─────────────────────────────────────────────
-# 푸터
-# ─────────────────────────────────────────────
-
-st.markdown(f"""
-<div class="app-footer">
-    AI Citation Analyzer v2.0 &nbsp;|&nbsp;
-    <span style="color:{_text_muted};">Powered by GPT &amp; Gemini</span> &nbsp;|&nbsp;
-    <span style="color:{_text_muted};">비용 최적화 · 문맥 인식 · TTL 캐시</span>
-</div>""", unsafe_allow_html=True)
+    with st.expander("📋 전체 파이프라인 로그", expanded=False):
+        for entry in state.debug_log:
+            stage = entry.get("stage", "?")
+            ts    = entry.get("ts", 0)
+            rest  = {k: v for k, v in entry.items() if k not in ("stage", "ts")}
+            st.markdown(f"**[{stage}]** `{ts:.2f}`")
+            st.json(rest)
