@@ -1,401 +1,399 @@
 """
-비즈니스 분석 오케스트레이터 v3.0
+AI 클라이언트 래퍼 — 비용 인식 샘플링 + 적응형 조기 종료
 
-이 파일은 순수 조율 레이어. 실제 로직은 하위 레이어에 위임:
-
-  core/schemas.py             — 데이터 스키마 (BusinessInfo, Competitor)
-  core/text_processing.py    — 크롤 텍스트 정제
-  core/industry_classifier.py — 업종 분류 (LLM 1~2회)
-  core/competitor_finder.py   — 경쟁사 도출 + 2단계 검증 (DNS/HEAD → Crawl)
-
-이 파일에서 직접 LLM 호출 / 캐시 키 생성 없음.
+수정 사항 (버그픽스):
+1. 캐시 hit 체크 언팩킹 오류 수정 — cache.get() 단일 반환값으로 통일
+2. _adaptive_batch 빈 응답 방어 처리
+3. 타임아웃 상한선 현실화 (최대 120초)
+4. call_gemini safety filter 빈 응답 AttributeError 방어
+5. results None 잔존 방어 — 수집 후 None 항목 SimResult로 교체
 """
 
-from __future__ import annotations
-
-import re
-import json
 import concurrent.futures
-from typing import Optional
-from urllib.parse import urlparse
+from dataclasses import dataclass, field
+from typing import Optional, Callable
 
 from core.logger import get_logger, CaptureError
 from core.cache import get_cache
-from core.crawler import crawl, crawl_search
-from core.ai_client import call_gpt, call_gemini
-from core.text_processing import extract_business_text
-from core.industry_classifier import classify_industry
-from core.competitor_finder import discover_competitors
-from core.schemas import BusinessInfo, Competitor
+from core.citation import detect_citation, build_brand_variants, wilson_ci, CitationResult
 
-logger = get_logger("biz_analysis")
-
-# 공개 re-export (기존 import 경로 호환)
-__all__ = [
-    "BusinessInfo", "Competitor",
-    "analyze_business", "discover_competitors",
-    "generate_target_questions", "run_strategy_analysis",
-]
+logger = get_logger("ai_client")
 
 
 # ─────────────────────────────────────────────
-# 비즈니스 분석 (오케스트레이터)
+# 비용 추적기
 # ─────────────────────────────────────────────
-def analyze_business(
-    client_gpt,
-    client_gemini,
-    url: str,
-    model_gpt: str,
-    confirmed_industry: str = "",
-    use_cache: bool = True,
-) -> BusinessInfo:
-    """
-    Pipeline:
-        1. 3-tier 크롤링
-        2. 텍스트 정제  (text_processing)
-        3. 검색 보완 수집
-        4. 업종 분류   (industry_classifier) ← LLM 최소 1회
-    """
-    try:
-        p = urlparse(url if url.startswith("http") else "https://" + url)
-        domain = p.netloc.replace("www.", "")
-    except Exception:
-        domain = url
 
-    stem = domain.split(".")[0]
+@dataclass
+class CostTracker:
+    """세션 내 API 비용 누적 추적 (USD 기준 추정)"""
+    GPT_PRICE_PER_1K_INPUT:  float = 0.00015
+    GPT_PRICE_PER_1K_OUTPUT: float = 0.00060
+    GEM_PRICE_PER_1K_INPUT:  float = 0.000075
+    GEM_PRICE_PER_1K_OUTPUT: float = 0.000300
 
-    # Step 1: 크롤링
-    crawl_result = crawl(url, use_cache=use_cache)
+    gpt_input_tokens:  int = 0
+    gpt_output_tokens: int = 0
+    gem_input_tokens:  int = 0
+    gem_output_tokens: int = 0
+    api_calls:         int = 0
 
-    # Step 2: 텍스트 정제
-    clean_text = extract_business_text(crawl_result.body_text)
-    logger.info(
-        f"extract_business_text: {len(crawl_result.body_text)} "
-        f"→ {len(clean_text)} chars (tier={crawl_result.tier_used})"
+    def add_gpt(self, input_t: int, output_t: int):
+        self.gpt_input_tokens  += input_t
+        self.gpt_output_tokens += output_t
+        self.api_calls         += 1
+
+    def add_gemini(self, input_t: int, output_t: int):
+        self.gem_input_tokens  += input_t
+        self.gem_output_tokens += output_t
+        self.api_calls         += 1
+
+    @property
+    def estimated_usd(self) -> float:
+        gpt = (self.gpt_input_tokens  / 1000 * self.GPT_PRICE_PER_1K_INPUT +
+               self.gpt_output_tokens / 1000 * self.GPT_PRICE_PER_1K_OUTPUT)
+        gem = (self.gem_input_tokens  / 1000 * self.GEM_PRICE_PER_1K_INPUT +
+               self.gem_output_tokens / 1000 * self.GEM_PRICE_PER_1K_OUTPUT)
+        return round(gpt + gem, 4)
+
+    def summary(self) -> dict:
+        return {
+            "api_calls":     self.api_calls,
+            "estimated_usd": self.estimated_usd,
+            "gpt_tokens":    self.gpt_input_tokens  + self.gpt_output_tokens,
+            "gem_tokens":    self.gem_input_tokens  + self.gem_output_tokens,
+        }
+
+
+# ─────────────────────────────────────────────
+# GPT 호출
+# ─────────────────────────────────────────────
+
+def call_gpt(
+    client,
+    prompt:      str,
+    system:      str = "",
+    model:       str = "gpt-4o-mini",
+    max_tokens:  int = 300,
+    temperature: float = 0.7,
+    tracker:     Optional[CostTracker] = None,
+) -> str:
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
 
-    # Step 3: 검색 보완 (크롤 품질과 무관하게 항상 수집)
-    search_ctx = ""
-    with CaptureError("biz_search", log_level="info"):
-        search_ctx = crawl_search(f"{stem} 서비스 업종 소개", use_cache=use_cache)
-        if not search_ctx or len(search_ctx) < 200:
-            search_ctx = crawl_search(
-                f"{stem} company overview service", use_cache=use_cache
+    result = response.choices[0].message.content or ""
+    result = result.strip()
+
+    if tracker and hasattr(response, "usage"):
+        tracker.add_gpt(
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        )
+
+    return result
+
+
+# ─────────────────────────────────────────────
+# Gemini 호출
+# ─────────────────────────────────────────────
+
+def call_gemini(
+    model_obj,
+    prompt:      str,
+    max_tokens:  int = 300,
+    temperature: float = 0.7,
+    tracker:     Optional[CostTracker] = None,
+) -> str:
+    import google.generativeai as genai
+
+    response = model_obj.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        ),
+    )
+
+    # BUG FIX: safety filter 등으로 빈 응답 반환 시 AttributeError 방어
+    try:
+        text = response.text or ""
+        text = text.strip()
+    except (AttributeError, ValueError):
+        # response.text 접근 자체가 예외를 던지는 경우 (blocked response 등)
+        logger.warning("Gemini returned empty/blocked response")
+        text = ""
+
+    if tracker and hasattr(response, "usage_metadata"):
+        um = response.usage_metadata
+        tracker.add_gemini(
+            getattr(um, "prompt_token_count",     0),
+            getattr(um, "candidates_token_count", 0),
+        )
+
+    return text
+
+
+# ─────────────────────────────────────────────
+# SimResult
+# ─────────────────────────────────────────────
+
+@dataclass
+class SimResult:
+    gpt_rate:     Optional[float]
+    gemini_rate:  Optional[float]
+    avg_rate:     Optional[float]
+    gpt_hits:     Optional[int]
+    gemini_hits:  Optional[int]
+    n:            int
+    gpt_ci:       tuple
+    gemini_ci:    tuple
+    gpt_samples:  list = field(default_factory=list)
+    gemini_samples: list = field(default_factory=list)
+    cost_summary: dict = field(default_factory=dict)
+    cache_hit:    bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "gpt_rate":       self.gpt_rate,
+            "gemini_rate":    self.gemini_rate,
+            "avg_rate":       self.avg_rate,
+            "gpt_hits":       self.gpt_hits,
+            "gemini_hits":    self.gemini_hits,
+            "n":              self.n,
+            "gpt_ci":         self.gpt_ci,
+            "gemini_ci":      self.gemini_ci,
+            "gpt_samples":    self.gpt_samples,
+            "gemini_samples": self.gemini_samples,
+        }
+
+
+# ─────────────────────────────────────────────
+# 적응형 배치 실행
+# ─────────────────────────────────────────────
+
+def _adaptive_batch(
+    call_fn:               Callable[[str], str],
+    question:              str,
+    brand_variants:        list,
+    n:                     int,
+    early_stop_threshold:  float = 0.05,
+) -> tuple:
+    samples   = []
+    probe_n   = min(10, n)
+    probe_hits = 0
+
+    for _ in range(probe_n):
+        resp = ""
+        with CaptureError("adaptive_probe", log_level="debug"):
+            resp = call_fn(question)
+
+        # BUG FIX: 빈 응답 스킵
+        if not resp:
+            continue
+
+        result: CitationResult = detect_citation(resp, brand_variants)
+        if result.cited:
+            probe_hits += 1
+        if len(samples) < 3 and result.response_sample:
+            samples.append(result.response_sample)
+
+    probe_rate = probe_hits / probe_n if probe_n > 0 else 0
+    lo, hi     = wilson_ci(probe_hits, probe_n)
+
+    # 조기 종료 조건
+    if (hi < early_stop_threshold * 100) or (lo > (1 - early_stop_threshold) * 100):
+        logger.info(f"조기 종료: rate={probe_rate:.1%}, CI=[{lo:.1f},{hi:.1f}]%")
+        remaining_hits = round(probe_rate * (n - probe_n))
+        return probe_hits + remaining_hits, samples, n
+
+    hits = probe_hits
+    for _ in range(n - probe_n):
+        resp = ""
+        with CaptureError("adaptive_full", log_level="debug"):
+            resp = call_fn(question)
+
+        # BUG FIX: 빈 응답 스킵
+        if not resp:
+            continue
+
+        result: CitationResult = detect_citation(resp, brand_variants)
+        if result.cited:
+            hits += 1
+        if len(samples) < 3 and result.response_sample:
+            samples.append(result.response_sample)
+
+    return hits, samples, n
+
+
+# ─────────────────────────────────────────────
+# 단일 질문 시뮬레이션
+# ─────────────────────────────────────────────
+
+def run_simulation(
+    client_gpt,
+    client_gemini,
+    question:   str,
+    target_url: str,
+    model_gpt:  str,
+    n:          int = 50,
+    biz_info:   dict = None,
+    tracker:    Optional[CostTracker] = None,
+    use_cache:  bool = True,
+) -> SimResult:
+    biz_info       = biz_info or {}
+    brand_variants = build_brand_variants(target_url, biz_info)
+    cache          = get_cache()
+
+    # BUG FIX: cache.get()은 단일 값 반환 — 언팩킹 제거
+    if use_cache:
+        cache_key = cache.make_key(
+            "sim", target_url, question, model_gpt,
+            n, ",".join(sorted(brand_variants))
+        )
+        cached = cache.get(cache_key)
+        if cached:
+            logger.info(f"Cache HIT: simulation({question[:30]}...)")
+            return SimResult(cache_hit=True, **cached)
+    else:
+        cache_key = None
+
+    sim_prompt = f"질문: {question}\n\n답변:"
+
+    def _gpt_call(q: str) -> str:
+        return call_gpt(
+            client_gpt, q,
+            max_tokens=180,
+            model=model_gpt,
+            temperature=0.6,
+            tracker=tracker,
+        )
+
+    def _gem_call(q: str) -> str:
+        return call_gemini(
+            client_gemini, q,
+            max_tokens=180,
+            temperature=0.6,
+            tracker=tracker,
+        )
+
+    gpt_hits, gpt_samples, gpt_n = 0, [], 0
+    gem_hits, gem_samples, gem_n = 0, [], 0
+    gpt_ran = False
+    gem_ran = False
+
+    # BUG FIX: 타임아웃 상한 현실화 — 최대 120초, 최소 60초
+    timeout = min(120, max(60, n * 2))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        futures = {}
+        if client_gpt:
+            futures["gpt"] = ex.submit(
+                _adaptive_batch, _gpt_call, sim_prompt, brand_variants, n
+            )
+        if client_gemini:
+            futures["gem"] = ex.submit(
+                _adaptive_batch, _gem_call, sim_prompt, brand_variants, n
             )
 
-    # Step 4: 업종 분류 위임
-    return classify_industry(
-        client_gpt=client_gpt,
-        client_gemini=client_gemini,
-        domain=domain,
-        clean_text=clean_text,
-        search_ctx=search_ctx,
-        model_gpt=model_gpt,
-        crawl_tier=crawl_result.tier_used,
-        confirmed_industry=confirmed_industry,
-        url=url,
-        use_cache=use_cache,
+        if "gpt" in futures:
+            with CaptureError("gpt_future", log_level="warning") as ctx:
+                gpt_hits, gpt_samples, gpt_n = futures["gpt"].result(timeout=timeout)
+                gpt_ran = True
+            if not ctx.ok:
+                logger.warning(f"GPT simulation failed: {ctx.error}")
+
+        if "gem" in futures:
+            with CaptureError("gem_future", log_level="warning") as ctx:
+                gem_hits, gem_samples, gem_n = futures["gem"].result(timeout=timeout)
+                gem_ran = True
+            if not ctx.ok:
+                logger.warning(f"Gemini simulation failed: {ctx.error}")
+
+    gpt_rate = round(gpt_hits / gpt_n * 100, 1) if gpt_ran and gpt_n > 0 else None
+    gem_rate = round(gem_hits / gem_n * 100, 1) if gem_ran and gem_n > 0 else None
+    valid    = [v for v in [gpt_rate, gem_rate] if v is not None]
+    avg_rate = round(sum(valid) / len(valid), 1) if valid else None
+
+    gpt_ci = wilson_ci(gpt_hits, gpt_n) if gpt_ran and gpt_n > 0 else (None, None)
+    gem_ci = wilson_ci(gem_hits, gem_n) if gem_ran and gem_n > 0 else (None, None)
+
+    result = SimResult(
+        gpt_rate=gpt_rate,
+        gemini_rate=gem_rate,
+        avg_rate=avg_rate,
+        gpt_hits=gpt_hits   if gpt_ran else None,
+        gemini_hits=gem_hits if gem_ran else None,
+        n=n,
+        gpt_ci=gpt_ci,
+        gemini_ci=gem_ci,
+        gpt_samples=gpt_samples,
+        gemini_samples=gem_samples,
+        cost_summary=tracker.summary() if tracker else {},
     )
 
+    if use_cache and cache_key:
+        cache.set(cache_key, result.to_dict())
 
-# ─────────────────────────────────────────────
-# 타겟 질문 생성
-# ─────────────────────────────────────────────
-_QUESTION_SYSTEM = (
-    "당신은 GEO(Generative Engine Optimization) 전문가이자 디지털 마케팅 전략가입니다. "
-    "완성된 질문만 출력합니다."
-)
-
-_CATEGORY_HINTS = {
-    "광고/마케팅": (
-        "광고주(중소기업 대표, 마케터)가 대행사를 선택할 때 묻는 질문 — "
-        "ROAS, CPA, 매체비, 대행수수료, 업종 레퍼런스 위주"
-    ),
-    "이커머스": "구매자의 배송·가격·신뢰도, 판매자의 입점·수수료 관련 질문",
-    "SaaS": "도입 전 데모·연동·보안·가격 플랜, 기존 솔루션 전환 비용 관련 질문",
-    "금융": "금리·한도·수수료·안전성, 타 금융사 대비 혜택 관련 질문",
-    "교육": "커리큘럼·강사·합격률·환불정책, 취업 연계 관련 질문",
-    "의료": "진료 과목·비용·예약, 전문성 관련 질문",
-    "게임": "게임성·과금정책·PC/모바일 지원, 경쟁 타이틀 대비 질문",
-}
-
-_QUESTION_VERSION = "v4"
-
-
-def generate_target_questions(
-    client_gpt,
-    client_gemini,
-    url: str,
-    engine: str,
-    model_gpt: str,
-    biz_info: Optional[BusinessInfo] = None,
-    use_cache: bool = True,
-) -> list[str]:
-    """비즈니스 정보 기반 고품질 타겟 질문 5개 생성."""
-    try:
-        p = urlparse(url if url.startswith("http") else "https://" + url)
-        domain = p.netloc.replace("www.", "")
-    except Exception:
-        domain = url
-
-    if biz_info is None:
-        biz_info = BusinessInfo(
-            brand_name=domain.split(".")[0].upper(),
-            industry="서비스",
-            industry_category="기타",
-            core_product="서비스",
-            target_audience="잠재 고객",
-        )
-
-    cache = get_cache()
-    cache_key = cache.make_key(
-        "questions", _QUESTION_VERSION, url, biz_info.industry, engine, model_gpt
-    )
-    if use_cache:
-        cached = cache.get(cache_key)
-        if cached:
-            logger.info(f"Cache HIT: questions({domain})")
-            return cached
-
-    category_hint = _CATEGORY_HINTS.get(
-        biz_info.industry_category,
-        f"{biz_info.industry} 분야에서 {biz_info.target_audience}가 실제로 고민하는 핵심 질문",
-    )
-    services_str = (
-        ", ".join(biz_info.key_services) if biz_info.key_services else biz_info.core_product
-    )
-
-    prompt = f"""당신은 {biz_info.industry} 분야 10년 경력 마케팅 전략가이자 GEO 전문가입니다.
-
-[분석 대상 서비스 정보 — 내부 참고용, 질문에 직접 노출 금지]
-- 업종: {biz_info.industry} ({biz_info.industry_category})
-- 핵심 서비스: {services_str}
-- 주요 타겟: {biz_info.target_audience}
-
-[질문 방향]
-{category_hint}
-
-[핵심 규칙 — 반드시 준수]
-1. 실제 사용자가 네이버, 구글, ChatGPT 검색창에 입력하는 방식의 자연스러운 질문
-2. 브랜드명, 회사명, 도메인 주소를 질문에 절대 포함하지 말 것
-3. "{biz_info.industry}" 카테고리 전체를 대상으로 하는 질문 (특정 브랜드 X)
-4. 구매 결정 5단계(인지, 비교, 신뢰, 가격, 전환) 각각 다룰 것
-5. {biz_info.industry} 업계 전문 용어와 지표 적극 활용
-6. 기초 탐색형 질문 금지 ("무엇인가요?", "소개해주세요" 등)
-
-[좋은 예시]
-- "{biz_info.industry} 업체 선택할 때 꼭 확인해야 할 계약 조건은?"
-- "{biz_info.target_audience}가 실제로 효과 본 {biz_info.industry} 서비스 어떻게 찾나요?"
-- "{biz_info.industry} 비용 대비 성과 잘 내는 곳 비교하는 방법은?"
-
-[나쁜 예시 — 절대 금지]
-- 브랜드명이나 회사명이 들어간 질문 일체
-
-번호 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
-
-    result_str = ""
-    with CaptureError("question_gen", log_level="warning") as ctx:
-        if engine == "GPT" and client_gpt:
-            result_str = call_gpt(client_gpt, prompt, system=_QUESTION_SYSTEM,
-                                  max_tokens=600, model=model_gpt, temperature=0.85)
-        elif client_gemini:
-            result_str = call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.85)
-        elif client_gpt:
-            result_str = call_gpt(client_gpt, prompt, system=_QUESTION_SYSTEM,
-                                  max_tokens=600, model=model_gpt, temperature=0.85)
-
-    if not ctx.ok:
-        raise RuntimeError(f"질문 생성 실패: {ctx.error}")
-
-    questions = _parse_questions(result_str)
-    if len(questions) < 3:
-        questions = _fallback_questions(biz_info)
-
-    result = questions[:5]
-    if use_cache:
-        cache.set(cache_key, result, namespace="biz")
     return result
 
 
-def _parse_questions(raw: str) -> list[str]:
-    out: list[str] = []
-    for ln in raw.split("\n"):
-        ln = ln.strip()
-        if not ln:
-            continue
-        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)
-        clean = re.sub(r'^[-•*]\s*', '', clean)
-        clean = re.sub(r'^\[.*?\]\s*', '', clean)
-        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean).strip()
-        if len(clean) > 10:
-            if not clean.endswith("?"):
-                clean += "?"
-            out.append(clean)
-    return out
-
-
-def _fallback_questions(biz: BusinessInfo) -> list[str]:
-    is_ad = "광고" in biz.industry or "마케팅" in biz.industry
-    if is_ad:
-        return [
-            f"{biz.industry} 대행사 선택할 때 업종별 ROAS 기준으로 비교하는 방법은?",
-            f"광고대행사 계약 전 반드시 확인해야 할 조건과 주의사항은?",
-            f"{biz.industry} 집행 매체별 효율 차이와 예산 배분 기준은?",
-            f"직접 광고 운영 vs 대행사 위탁 — 비용 구조와 성과 차이 비교",
-            f"{biz.industry} 실제 집행 성과 사례와 평균 CPA 수준은 어느 정도인가요?",
-        ]
-    return [
-        f"{biz.industry} 서비스 선택할 때 경쟁사 대비 꼭 확인해야 할 차이점은?",
-        f"{biz.target_audience}가 {biz.industry} 도입 후 실제로 얻은 성과 사례는?",
-        f"{biz.industry} 계약 및 이용 조건, 비용 구조가 업계 평균과 비교해 어떤가요?",
-        f"{biz.industry} 실제 사용자 평가에서 자주 언급되는 불만 사항은?",
-        f"{biz.industry} 서비스를 비교할 때 가장 중요한 선택 기준은 무엇인가요?",
-    ]
-
-
 # ─────────────────────────────────────────────
-# 전략 분석
+# 전체 질문 병렬 시뮬레이션
 # ─────────────────────────────────────────────
-_STRATEGY_VERSION = "v4"
 
-
-def run_strategy_analysis(
+def run_all_simulations(
     client_gpt,
     client_gemini,
-    question: str,
+    questions:  list,
     target_url: str,
-    model_gpt: str,
-    biz_info: Optional[BusinessInfo] = None,
-    market_scope: str = "글로벌",
-    use_cache: bool = True,
-) -> dict:
-    try:
-        p = urlparse(target_url if target_url.startswith("http") else "https://" + target_url)
-        domain = p.netloc.replace("www.", "")
-    except Exception:
-        domain = target_url
-
-    cache = get_cache()
-    cache_key = cache.make_key(
-        "strategy", _STRATEGY_VERSION,
-        target_url, question[:50], market_scope, model_gpt,
-    )
-    if use_cache:
-        cached = cache.get(cache_key)
-        if cached:
-            logger.info(f"Cache HIT: strategy({question[:30]}...)")
-            return cached
-
-    biz = biz_info or BusinessInfo(
-        brand_name=domain, industry="서비스", industry_category="기타",
-        core_product="서비스", target_audience="고객",
-    )
-    scope_inst = (
-        "반드시 대한민국에서 서비스하는 국내 기업만 포함하세요."
-        if "국내" in market_scope
-        else "국내외 글로벌 기업을 모두 포함하세요."
-    )
-    _system = (
-        "당신은 디지털 마케팅 전략 컨설턴트입니다. "
-        "모든 답변은 완성된 문장으로, 중간에 끊기지 않게 서술하세요."
-    )
-
-    # 경쟁사·진단·키워드·GEO 4개 완전 병렬
-    def _competitors() -> list:
-        prompt = f"""질문: "{question}"
-이 질문에 답변할 때 AI가 자주 인용할 상위 10개 브랜드를 인용 가능성 순으로 나열하세요.
-- 분석 대상: {biz.brand_name} (업종: {biz.industry})
-- {scope_inst}
-- {domain}도 적절한 순위에 포함
-- 반드시 실제 존재하는 브랜드와 도메인만 사용. c1.com, competitor.com 같은 가상 도메인 절대 금지.
-JSON 배열만 출력 (다른 텍스트 없이):
-[{{"rank":1,"domain":"실제도메인.com","brand_name":"실제브랜드명","reason":"이유 20자 이내","position":"업계1위|신흥강자|틈새전문 중 택1"}}]"""
-        raw = ""
-        with CaptureError("strategy_comp", log_level="warning"):
-            raw = (call_gpt(client_gpt, prompt, system=_system, max_tokens=1200,
-                            model=model_gpt, temperature=0.3)
-                   if client_gpt else
-                   call_gemini(client_gemini, prompt, max_tokens=1200, temperature=0.3))
-        with CaptureError("strategy_comp_parse", log_level="warning"):
-            m = re.search(r'\[.*\]', raw, re.DOTALL)
-            if m:
-                parsed = json.loads(m.group())
-                real = [
-                    c for c in parsed
-                    if c.get("domain") and
-                    not re.match(r'^(c\d+|competitor\d*|example|test|dummy)\.', str(c.get("domain", "")))
-                ]
-                if real:
-                    return real
-        return []
-
-    def _diagnosis() -> list[str]:
-        prompt = (
-            f'{domain} ({biz.brand_name}, {biz.industry})이 "{question}"에서 '
-            f'AI 인용 점유율이 낮은 원인 3가지.\n'
-            f'경쟁사 대비 구체적 문제점. 각 항목 50자 이내. 반드시 한국어로. 번호 없이 한 줄씩:'
+    model_gpt:  str,
+    n:          int = 50,
+    biz_info:   dict = None,
+    tracker:    Optional[CostTracker] = None,
+    use_cache:  bool = True,
+) -> list:
+    # BUG FIX: None 잔존 방지용 기본 SimResult 팩토리
+    def _empty_result() -> SimResult:
+        return SimResult(
+            gpt_rate=None, gemini_rate=None, avg_rate=None,
+            gpt_hits=None, gemini_hits=None,
+            n=n, gpt_ci=(None, None), gemini_ci=(None, None),
         )
-        with CaptureError("strategy_diag", log_level="warning") as ctx:
-            r = (call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
-                          model=model_gpt, temperature=0.4)
-                 if client_gpt else
-                 call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.4))
-            items = [d.strip().lstrip("•-*") for d in r.split("\n") if d.strip()][:3]
-            if items:
-                return items
-        return ["데이터 부족으로 분석 불가"]
 
-    def _keywords() -> list[str]:
-        prompt = (
-            f'{biz.industry} 분야에서 AI 인용 확률 높은 블루오션 키워드 5개를 한국어로 추천해주세요.\n'
-            f'조건: 경쟁이 적고 전문성 높은 틈새 키워드. {scope_inst}\n'
-            f'반드시 한국어 키워드만. 영어 금지. 키워드만 한 줄에 하나씩 출력:'
-        )
-        with CaptureError("strategy_kw", log_level="warning") as ctx:
-            r = (call_gemini(client_gemini, prompt, max_tokens=600, temperature=0.7)
-                 if client_gemini else
-                 call_gpt(client_gpt, prompt, system=_system, max_tokens=600,
-                          model=model_gpt, temperature=0.7))
-            items = [k.strip().lstrip("•-*1234567890. ") for k in r.split("\n") if k.strip() and len(k.strip()) > 2][:5]
-            if items:
-                return items
-        return ["분석 중 오류"]
+    results = [None] * len(questions)
 
-    def _geo() -> list[str]:
-        prompt = (
-            f'{domain} ({biz.brand_name})이 "{question}"에서 AI에 더 잘 인용되도록 '
-            f'홈페이지 개선 방안 3가지.\n'
-            f'구체적 문구 수정 또는 구조 변경 제안 포함. 각 항목 2줄 이내. 번호 포함:'
-        )
-        with CaptureError("strategy_geo", log_level="warning") as ctx:
-            r = (call_gpt(client_gpt, prompt, system=_system, max_tokens=1000,
-                          model=model_gpt, temperature=0.5)
-                 if client_gpt else
-                 call_gemini(client_gemini, prompt, max_tokens=1000, temperature=0.5))
-            items = [g.strip() for g in re.split(r'\n(?=\d+\.)', r) if g.strip()][:3]
-            if items:
-                return items
-        return ["분석 중 오류"]
+    def _sim_one(idx: int, question: str):
+        try:
+            r = run_simulation(
+                client_gpt, client_gemini, question, target_url,
+                model_gpt, n=n, biz_info=biz_info,
+                tracker=tracker, use_cache=use_cache,
+            )
+            results[idx] = r
+        except Exception as e:
+            logger.warning(f"[sim_q{idx}] 오류: {e}")
+            results[idx] = _empty_result()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        f_comp = ex.submit(_competitors)
-        f_diag = ex.submit(_diagnosis)
-        f_kw   = ex.submit(_keywords)
-        f_geo  = ex.submit(_geo)
+    max_workers = min(len(questions), 5)
+    # BUG FIX: 전체 타임아웃도 현실화
+    collect_timeout = min(300, max(90, n * 3))
 
-        competitors = f_comp.result(timeout=60) or []
-        diagnoses   = f_diag.result(timeout=60) or ["데이터 부족으로 분석 불가"]
-        keywords    = f_kw.result(timeout=60)   or ["분석 중 오류"]
-        geo_guides  = f_geo.result(timeout=60)  or ["분석 중 오류"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_sim_one, i, q): i for i, q in enumerate(questions)}
+        for fut in concurrent.futures.as_completed(futs):
+            with CaptureError("sim_future_collect", log_level="warning"):
+                fut.result(timeout=collect_timeout)
 
-    result = {
-        "competitors": competitors,
-        "diagnoses":   diagnoses,
-        "keywords":    keywords,
-        "geo_guides":  geo_guides,
-    }
+    # BUG FIX: None이 남아있는 슬롯 교체 (스레드 예외로 results[idx] 미설정된 경우)
+    results = [r if r is not None else _empty_result() for r in results]
 
-    if use_cache:
-        cache.set(cache_key, result, namespace="strategy")
-
-    return result
+    return results
