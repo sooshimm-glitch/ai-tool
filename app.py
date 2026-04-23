@@ -246,15 +246,21 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] svg {{
     font-weight:600 !important;
     font-size:.9rem !important;
     color:{_text_muted} !important;
+    -webkit-text-fill-color:{_text_muted} !important;
     padding:10px 22px !important;
     background:transparent !important;
 }}
 .stTabs [aria-selected="true"] {{
     background:{_tab_sel} !important;
     color:{_tab_txt} !important;
+    -webkit-text-fill-color:{_tab_txt} !important;
     box-shadow:0 4px 12px rgba(0,0,0,.3) !important;
 }}
-.stTabs [data-baseweb="tab"] p {{ color:inherit !important; }}
+.stTabs [data-baseweb="tab"] p,
+.stTabs [data-baseweb="tab"] span {{
+    color:inherit !important;
+    -webkit-text-fill-color:inherit !important;
+}}
 
 /* ── 버튼 ── */
 .stButton>button {{
