@@ -1,15 +1,8 @@
-"""
-AI Citation Analyzer — 통합 분석 앱 v3.0
-
-변경 사항:
-  - 자동/수동 탭 통합 → 질문을 사용자가 직접 입력 (AI 질문 추출 제거)
-  - 결과 포맷은 기존 자동분석형 그대로 유지:
-    · 질문별 인용 점유율 차트 (GPT vs Gemini)
-    · AI 인용 경쟁 현황 TOP 5
-    · 인용 실패 원인 진단
-    · 블루오션 키워드
-    · GEO 최적화 가이드
-"""
+# ── Streamlit Cloud 경로 설정 — 반드시 모든 import보다 먼저 실행 ──
+import sys, os as _os
+_APP_ROOT = _os.path.dirname(_os.path.abspath(__file__))
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
 
 import streamlit as st
 import time
@@ -19,9 +12,6 @@ import concurrent.futures
 import pandas as pd
 import plotly.graph_objects as go
 from urllib.parse import urlparse
-
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
 
 from core.cache import TTLCache, get_cache
 from core.logger import get_logger, CaptureError
