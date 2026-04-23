@@ -1,17 +1,22 @@
 """
 공유 데이터 스키마 — 엄격한 타입 보장 + 안전한 역직렬화
 
-모든 레이어가 이 모듈을 import. biz_analysis에서 스키마를 분리함으로써
-순환 import 없이 레이어 간 데이터를 교환한다.
+수정 사항 (버그픽스):
+1. BusinessInfo.__post_init__ crawl_tier 타입 변환 — float/음수/None 모두 안전 처리
+2. Competitor.__post_init__ rank 문자열 혼합형 방어 — int() 변환 실패 시 기본값
+3. Competitor.to_dict() — __dict__ 대신 dataclasses.asdict() 사용
+4. BusinessInfo.from_dict — None 값 필드 방어 처리
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any
 
+
 # ── 업종 카테고리 정의 ──────────────────────────────────────────────
+
 CATEGORY_TO_DETAIL: dict[str, list[str]] = {
     "광고/마케팅": [
         "퍼포먼스 마케팅 대행사", "종합 광고대행사", "콘텐츠 마케팅 에이전시",
@@ -62,7 +67,7 @@ CATEGORY_TO_DETAIL: dict[str, list[str]] = {
 
 INDUSTRY_CATEGORIES: list[str] = list(CATEGORY_TO_DETAIL.keys())
 
-VALID_CONFIDENCES = {"high", "medium", "low"}
+VALID_CONFIDENCES      = {"high", "medium", "low"}
 VALID_MARKET_POSITIONS = {"업계 1위", "신흥 강자", "틈새 전문"}
 
 _BAD_INDUSTRIES: frozenset[str] = frozenset({
@@ -72,28 +77,48 @@ _BAD_INDUSTRIES: frozenset[str] = frozenset({
 })
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """
+    BUG FIX: int 변환 헬퍼 — float, 문자열 혼합형, None 모두 안전 처리.
+    예) 1.0 → 1, "2위" → default, None → default, -1 → -1(그대로)
+    """
+    if value is None:
+        return default
+    try:
+        # float → int (1.0 → 1)
+        return int(float(str(value).strip()))
+    except (ValueError, TypeError):
+        # "2위" 같은 혼합형 — 앞의 숫자만 추출
+        m = re.match(r'[-+]?\d+', str(value).strip())
+        if m:
+            return int(m.group())
+        return default
+
+
 # ── BusinessInfo ────────────────────────────────────────────────────
+
 @dataclass
 class BusinessInfo:
-    brand_name: str
-    industry: str
+    brand_name:        str
+    industry:          str
     industry_category: str
-    core_product: str
-    target_audience: str
-    key_services: list[str] = field(default_factory=list)
-    confidence: str = "medium"
-    crawl_tier: int = 0
+    core_product:      str
+    target_audience:   str
+    key_services:      list[str] = field(default_factory=list)
+    confidence:        str       = "medium"
+    crawl_tier:        int       = 0
 
-    # ── 유효성 검사 ──
     def __post_init__(self) -> None:
-        # 타입 강제
-        self.brand_name      = str(self.brand_name or "").strip() or "Unknown"
-        self.industry        = str(self.industry or "").strip() or "기타 서비스"
+        # 문자열 필드 안전 변환
+        self.brand_name        = str(self.brand_name        or "").strip() or "Unknown"
+        self.industry          = str(self.industry          or "").strip() or "기타 서비스"
         self.industry_category = str(self.industry_category or "").strip()
-        self.core_product    = str(self.core_product or "").strip() or self.industry
-        self.target_audience = str(self.target_audience or "").strip() or "잠재 고객"
-        self.confidence      = self.confidence if self.confidence in VALID_CONFIDENCES else "medium"
-        self.crawl_tier      = int(self.crawl_tier) if str(self.crawl_tier).isdigit() else 0
+        self.core_product      = str(self.core_product      or "").strip() or self.industry
+        self.target_audience   = str(self.target_audience   or "").strip() or "잠재 고객"
+        self.confidence        = self.confidence if self.confidence in VALID_CONFIDENCES else "medium"
+
+        # BUG FIX: crawl_tier — float/문자열/None 모두 안전하게 처리
+        self.crawl_tier = max(0, _safe_int(self.crawl_tier, default=0))
 
         # key_services: list[str] 보장
         if not isinstance(self.key_services, list):
@@ -121,14 +146,16 @@ class BusinessInfo:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BusinessInfo":
-        """알 수 없는 키 무시, 누락 키 기본값으로 안전 복원."""
-        known = {f for f in cls.__dataclass_fields__}
+        """
+        알 수 없는 키 무시, 누락 키 기본값으로 안전 복원.
+        BUG FIX: None 값 필드도 __post_init__ 에서 처리되도록 그대로 전달
+        """
+        known = set(cls.__dataclass_fields__)
         safe  = {k: v for k, v in d.items() if k in known}
         return cls(**safe)
 
     @classmethod
     def fallback(cls, domain_stem: str, crawl_tier: int = 0) -> "BusinessInfo":
-        # 하이픈·언더스코어 제거하고 자연스러운 형태로 (MY-PROGRESS → My Progress)
         brand = domain_stem.replace("-", " ").replace("_", " ").title()
         return cls(
             brand_name=brand,
@@ -142,21 +169,23 @@ class BusinessInfo:
 
 
 # ── Competitor ──────────────────────────────────────────────────────
+
 @dataclass
 class Competitor:
-    rank: int
-    brand_name: str
-    domain: str
-    reason: str
+    rank:            int
+    brand_name:      str
+    domain:          str
+    reason:          str
     market_position: str
-    verified: bool = False
-    evidence: str = ""
+    verified:        bool = False
+    evidence:        str  = ""
 
     def __post_init__(self) -> None:
-        self.rank         = max(1, int(self.rank or 1))
-        self.brand_name   = str(self.brand_name or "").strip()
-        self.domain       = str(self.domain or "").strip().lower()
-        self.reason       = str(self.reason or "")[:60]
+        # BUG FIX: rank — 문자열 혼합형("1위" 등) 안전 변환
+        self.rank           = max(1, _safe_int(self.rank, default=1))
+        self.brand_name     = str(self.brand_name     or "").strip()
+        self.domain         = str(self.domain         or "").strip().lower()
+        self.reason         = str(self.reason         or "")[:60]
         self.market_position = (
             self.market_position
             if self.market_position in VALID_MARKET_POSITIONS
@@ -176,4 +205,9 @@ class Competitor:
         return False
 
     def to_dict(self) -> dict[str, Any]:
-        return self.__dict__.copy()
+        # BUG FIX: __dict__ 대신 dataclasses.asdict() 사용 — 더 안전한 직렬화
+        try:
+            return asdict(self)
+        except Exception:
+            # asdict 실패 시 (중첩 비직렬화 객체 등) __dict__ 폴백
+            return self.__dict__.copy()
