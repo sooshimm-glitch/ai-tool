@@ -1,9 +1,44 @@
-# ── Streamlit Cloud 경로 설정 — 반드시 모든 import보다 먼저 실행 ──
-import sys, os as _os
-_APP_ROOT = _os.path.dirname(_os.path.abspath(__file__))
-if _APP_ROOT not in sys.path:
-    sys.path.insert(0, _APP_ROOT)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Step 0: sys.path 설정 — 모든 import 최우선 실행
+# Streamlit Cloud는 __file__ 기반이 실패하는 경우가 있으므로
+# 3가지 전략을 모두 시도한다.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+import sys
+import os
 
+def _setup_path():
+    candidates = []
+
+    # 전략 1: __file__ 절대경로 기반
+    try:
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+
+    # 전략 2: 현재 작업 디렉토리 (Streamlit Cloud = 프로젝트 루트)
+    try:
+        candidates.append(os.getcwd())
+    except Exception:
+        pass
+
+    # 전략 3: /mount/src/ai-tool 하드코딩 (Streamlit Cloud 고정 경로)
+    candidates.append("/mount/src/ai-tool")
+
+    for p in candidates:
+        if p and p not in sys.path:
+            sys.path.insert(0, p)
+
+    # 실제로 core/ 가 있는 경로를 반환 (디버깅용)
+    for p in candidates:
+        if p and os.path.isdir(os.path.join(p, "core")):
+            return p
+    return candidates[0] if candidates else ""
+
+_APP_ROOT = _setup_path()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Step 1: 일반 패키지 import
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import streamlit as st
 import time
 import re
@@ -13,16 +48,38 @@ import pandas as pd
 import plotly.graph_objects as go
 from urllib.parse import urlparse
 
-from core.cache import TTLCache, get_cache
-from core.logger import get_logger, CaptureError
-from core.citation import build_brand_variants, wilson_ci
-from core.ai_client import (
-    call_gpt, call_gemini,
-    run_all_simulations,
-    CostTracker, SimResult,
-)
-from core.biz_analysis import run_strategy_analysis
-from core.schemas import BusinessInfo
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Step 2: core 모듈 import — 실패 시 UI에 진단 정보 표시
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+try:
+    from core.cache import TTLCache, get_cache
+    from core.logger import get_logger, CaptureError
+    from core.citation import build_brand_variants, wilson_ci
+    from core.ai_client import (
+        call_gpt, call_gemini,
+        run_all_simulations,
+        CostTracker, SimResult,
+    )
+    from core.biz_analysis import run_strategy_analysis
+    from core.schemas import BusinessInfo
+except ImportError as _e:
+    st.set_page_config(page_title="Import Error", page_icon="❌")
+    st.error(f"**core 모듈 import 실패**")
+    st.code(f"""
+오류 유형 : {type(_e).__name__}
+오류 내용 : {_e}
+
+_APP_ROOT  : {_APP_ROOT}
+os.getcwd(): {os.getcwd()}
+sys.path   : {chr(10).join(sys.path[:6])}
+
+core/ 존재 여부:
+  __file__ 기준 : {os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else '', 'core'))}
+  CWD 기준       : {os.path.isdir(os.path.join(os.getcwd(), 'core'))}
+  하드코딩 기준  : {os.path.isdir('/mount/src/ai-tool/core')}
+""", language="text")
+    st.info("위 정보를 개발자에게 전달해 주세요.")
+    st.stop()
 
 logger = get_logger("app")
 
