@@ -315,18 +315,9 @@ def discover_competitors(
 
 
 def _fallback_competitors(n: int) -> list[Competitor]:
-    return [
-        Competitor(
-            rank=i + 1,
-            brand_name=f"경쟁사 {i+1}",
-            domain=f"competitor{i+1}.com",
-            reason="동종 업계",
-            market_position="틈새 전문",
-            verified=False,
-            evidence="AI 후보 생성 실패",
-        )
-        for i in range(n)
-    ]
+    # BUG FIX: 가짜 도메인(competitor1.com) 대신 빈 리스트 반환
+    # UI에서 "경쟁사 분석 실패" 메시지를 보여주는 게 더 정직함
+    return []
 
 
 def _build_unverified(candidates: list[dict]) -> list[Competitor]:
