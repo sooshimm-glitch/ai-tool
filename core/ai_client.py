@@ -115,8 +115,14 @@ def call_gemini(
 ) -> str:
     import google.generativeai as genai
 
+    # Gemini 마크다운 아이콘/이모지 방지 지시를 프롬프트 앞에 주입
+    _clean_prompt = (
+        "중요: 마크다운 기호(_arrowRight_ 등 _word_, *, **, 이모지, 특수문자) 절대 사용 금지. "
+        "순수 텍스트만 출력.\n\n" + prompt
+    )
+
     response = model_obj.generate_content(
-        prompt,
+        _clean_prompt,
         generation_config=genai.types.GenerationConfig(
             max_output_tokens=max_tokens,
             temperature=temperature,
