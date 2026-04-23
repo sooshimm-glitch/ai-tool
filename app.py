@@ -1203,11 +1203,18 @@ with tab1:
                 st.markdown("**🏢 도출된 경쟁사**")
                 comp_cols = st.columns(min(len(competitors), 5))
                 for i, comp in enumerate(competitors[:5]):
-                    comp_cols[i].markdown(
-                        f"**{comp.rank}.** {comp.brand_name}\n\n"
-                        f"<span style='font-size:.75rem;color:{_text_muted};'>{comp.domain}</span>",
-                        unsafe_allow_html=True
-                    )
+                    # 가짜 도메인이면 표시 안 함
+                    from core.schemas import Competitor as _Comp
+                    if not _Comp.is_fake_domain(comp.domain if isinstance(comp, object) and hasattr(comp, 'domain') else comp.get('domain','')):
+                        comp_cols[i].markdown(
+                            f"**{comp.rank if hasattr(comp,'rank') else comp.get('rank',i+1)}.** "
+                            f"{comp.brand_name if hasattr(comp,'brand_name') else comp.get('brand_name','')}"
+                            f"\n\n<span style='font-size:.75rem;color:{_text_muted};'>"
+                            f"{comp.domain if hasattr(comp,'domain') else comp.get('domain','')}</span>",
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.caption("⚠️ 경쟁사 분석을 완료하지 못했습니다. API 응답을 확인하세요.")
 
             # ── 질문별 상세 결과 ──
             st.markdown("### 📋 질문별 상세 결과")
