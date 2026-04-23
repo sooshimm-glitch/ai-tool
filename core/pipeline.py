@@ -379,7 +379,8 @@ def generate_questions_from_state(
 ❌ 브랜드명, 회사명, 도메인 주소 포함
 ❌ 단순 정보 탐색형 (역사, 소개, 설명 등)
 
-번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결."""
+번호·라벨 없이 질문 5개만 출력. 한 줄에 하나. 물음표(?)로 종결.
+절대 금지: 마크다운 기호(_arrowRight_, *, **, →, ▶, :emoji:), 이모지, 특수문자 사용 금지. 순수 텍스트만 출력."""
 
     result_str = ""
     with CaptureError("question_gen", log_level="warning") as ctx:
@@ -395,18 +396,20 @@ def generate_questions_from_state(
     if not ctx.ok:
         state.errors.append(f"question_gen: {ctx.error}")
 
-    # 파싱
+    # 파싱 — Gemini 마크다운 아이콘 완전 제거
     lines = [ln.strip() for ln in result_str.split("\n") if ln.strip()]
     raw_questions = []
     for ln in lines:
-        clean = re.sub(r'^[\d]+[.)]\s*', '', ln)           # 앞머리 번호
-        clean = re.sub(r'^[-•*→▶]\s*', '', clean)           # 앞머리 bullet/화살표
-        clean = re.sub(r'^\[.*?\]\s*', '', clean)           # 앞머리 [태그]
-        clean = re.sub(r'^\*\*.*?\*\*\s*', '', clean)     # **bold**
-        clean = re.sub(r'_arrow\w+_', '', clean)              # _arrowRight_ 등 마크다운 아이콘
+        clean = ln
+        clean = re.sub(r'_[a-zA-Z]+_', '', clean)             # _arrowRight_, _bold_ 등
         clean = re.sub(r':[a-z_]+:', '', clean)                # :emoji_name: 형식
+        clean = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', clean) # *bold*, **bold**, ***bold***
+        clean = re.sub(r'^[\d]+[.)]\s*', '', clean)          # 앞머리 번호
+        clean = re.sub(r'^[-•*→▶►•◦‣⁃]\s*', '', clean)       # 앞머리 bullet/화살표 전체
+        clean = re.sub(r'^\[.*?\]\s*', '', clean)           # 앞머리 [태그]
+        clean = re.sub(r'[\u2600-\u27BF]', '', clean)        # 유니코드 특수기호
+        clean = re.sub(r'[\U0001F300-\U0001F9FF]', '', clean) # 이모지
         clean = re.sub(r'\s{2,}', ' ', clean).strip()         # 연속 공백 정리
-        # 질문이 아닌 라인 제거 (너무 짧거나 메타 텍스트)
         if len(clean) > 10 and not clean.startswith("참고") and not clean.startswith("주의"):
             if not clean.endswith("?"):
                 clean += "?"
